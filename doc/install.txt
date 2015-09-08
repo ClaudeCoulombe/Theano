@@ -199,10 +199,13 @@ the Theano cache like this:
 Bleeding-edge install instructions
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Master Tests Status:
+.. only:: html
 
-.. image:: https://secure.travis-ci.org/Theano/Theano.png?branch=master
-    :target: http://travis-ci.org/Theano/Theano/builds
+   Master Tests Status:
+
+   .. raw:: html
+
+      <a href="http://travis-ci.org/Theano/Theano/builds"><img src="https://secure.travis-ci.org/Theano/Theano.png?branch=master" /></a>&nbsp;
 
 If you are a developer of Theano, then check out the :ref:`dev_start_guide`.
 
@@ -303,6 +306,18 @@ to your ``Theano`` folder and execute the following command:
     git pull
 
 You should update frequently, bugs are fixed on a very regular basis.
+
+
+Specific git commit
+~~~~~~~~~~~~~~~~~~~
+
+You can install a specific git commit by using the bleeding edge
+instruction and adding @COMMIT_ID to the pip command like:
+
+.. code-block:: bash
+
+    pip install --upgrade --no-deps git+git://github.com/Theano/Theano.git@07e9332a0932e90c47ed2a70fc3c7f8a55d2aa23
+
 
 
 .. _testing_installation:
