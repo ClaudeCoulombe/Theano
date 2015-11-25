@@ -17,6 +17,7 @@ import tempfile
 import time
 import platform
 import distutils.sysconfig
+import warnings
 
 import numpy.distutils  # TODO: TensorType should handle this
 
@@ -253,7 +254,10 @@ static struct PyModuleDef moduledef = {{
         self.print_init(sio)
 
         rval = sio.getvalue()
-        self.code_hash = hash_from_code(rval)
+        # Make sure the hash of the code hasn't changed
+        h = hash_from_code(rval)
+        assert self.code_hash is None or self.code_hash == h
+        self.code_hash = h
         rval = re.sub(self.hash_placeholder, self.code_hash, rval)
         # Finalize the Module, so no support code or function
         # can be added
@@ -321,7 +325,10 @@ def dlimport(fullpath, suffix=None):
             if hasattr(importlib, "invalidate_caches"):
                 importlib.invalidate_caches()
         t0 = time.time()
-        rval = __import__(module_name, {}, {}, [module_name])
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore",
+                                    message="numpy.ndarray size changed")
+            rval = __import__(module_name, {}, {}, [module_name])
         t1 = time.time()
         import_time += t1 - t0
         if not rval:
@@ -1620,6 +1627,16 @@ def std_lib_dirs_and_libs():
         # Typical include directory: /usr/include/python2.6
         libname = os.path.basename(python_inc)
         std_lib_dirs_and_libs.data = [libname], []
+
+    # sometimes, the linker cannot find -lpython so we need to tell it
+    # explicitly where it is located this returns
+    # somepath/lib/python2.x
+
+    python_lib = distutils.sysconfig.get_python_lib(plat_specific=1,
+                                                    standard_lib=1)
+    python_lib = os.path.dirname(python_lib)
+    if python_lib not in std_lib_dirs_and_libs.data[1]:
+        std_lib_dirs_and_libs.data[1].append(python_lib)
     return std_lib_dirs_and_libs.data
 std_lib_dirs_and_libs.data = None
 
@@ -1766,6 +1783,8 @@ class Compiler(object):
 class GCC_compiler(Compiler):
     # The equivalent flags of --march=native used by g++.
     march_flags = None
+
+    supports_amdlibm = True
 
     @staticmethod
     def version_str():
@@ -2000,11 +2019,12 @@ class GCC_compiler(Compiler):
         # in the key of the compiled module, avoiding potential conflicts.
 
         # Figure out whether the current Python executable is 32
-        # or 64 bit and compile accordingly. This step is ignored for ARM
-        # architectures in order to make Theano compatible with the Raspberry
-        # Pi, and Raspberry Pi 2.
+        # or 64 bit and compile accordingly. This step is ignored for
+        # ARM (32-bit and 64-bit) architectures in order to make
+        # Theano compatible with the Raspberry Pi, Raspberry Pi 2, or
+        # other systems with ARM processors.
         if (not any(['arm' in flag for flag in cxxflags]) and
-                'arm' not in platform.machine()):
+                not any(arch in platform.machine() for arch in ['arm', 'aarch'])):
             n_bits = local_bitwidth()
             cxxflags.append('-m%d' % n_bits)
             _logger.debug("Compiling for %s bit architecture", n_bits)
@@ -2096,15 +2116,6 @@ class GCC_compiler(Compiler):
         include_dirs = include_dirs + std_include_dirs()
         libs = std_libs() + libs
         lib_dirs = std_lib_dirs() + lib_dirs
-
-        # sometimes, the linker cannot find -lpython so we need to tell it
-        # explicitly where it is located
-        # this returns somepath/lib/python2.x
-        python_lib = distutils.sysconfig.get_python_lib(plat_specific=1,
-                                                        standard_lib=1)
-        python_lib = os.path.dirname(python_lib)
-        if python_lib not in lib_dirs:
-            lib_dirs.append(python_lib)
 
         cppfilename = os.path.join(location, 'mod.cpp')
         cppfile = open(cppfilename, 'w')

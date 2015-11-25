@@ -365,7 +365,7 @@ def _infer_ndim_bcast(ndim, shape, *args):
         if len(pre_v_shape) == 0:
             v_shape = tensor.constant([], dtype='int32')
         else:
-            v_shape = tensor.stack(*pre_v_shape)
+            v_shape = tensor.stack(pre_v_shape)
 
     elif shape is None:
         # The number of drawn samples will be determined automatically,
@@ -379,9 +379,17 @@ def _infer_ndim_bcast(ndim, shape, *args):
         ndim = template.ndim
     else:
         v_shape = tensor.as_tensor_variable(shape)
+        if v_shape.ndim != 1:
+            raise TypeError(
+                "shape must be a vector or list of scalar, got '%s'" % v_shape)
+
         if ndim is None:
             ndim = tensor.get_vector_length(v_shape)
         bcast = [False] * ndim
+
+    if v_shape.ndim != 1:
+        raise TypeError("shape must be a vector or list of scalar, got '%s'" %
+                        v_shape)
 
     if (not (v_shape.dtype.startswith('int') or
              v_shape.dtype.startswith('uint'))):

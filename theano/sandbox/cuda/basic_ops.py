@@ -92,10 +92,7 @@ class HostFromGpu(GpuOp):
 
     def R_op(self, inputs, eval_points):
         ev, = eval_points
-        if isinstance(ev, tensor.TensorType):
-            return [gpu_from_host(ev)]
-        else:
-            return [ev]
+        return [self(ev)]
 
     def infer_shape(self, node, xshp):
         return xshp
@@ -155,10 +152,7 @@ class GpuFromHost(GpuOp):
 
     def R_op(self, inputs, eval_points):
         ev, = eval_points
-        if isinstance(ev, CudaNdarrayType):
-            return [host_from_gpu(ev)]
-        else:
-            return [ev]
+        [self(ev)]
 
     def infer_shape(self, node, xshp):
         return xshp
@@ -749,7 +743,6 @@ class GpuCAReduce(GpuOp):
             %(z)s = (CudaNdarray*) CudaNdarray_NewDims(%(nd_out)s, new_dims);
             if (NULL == %(z)s)
             {
-                PyErr_Format(PyExc_RuntimeError, "Failed to allocate output");
                 %(fail)s;
             }
         }
@@ -1838,7 +1831,7 @@ class GpuCAReduce(GpuOp):
         """ % locals(), file=sio)
 
     def c_code_cache_version_apply(self, node):
-        version = [13]  # the version corresponding to the c code in this Op
+        version = [14]  # the version corresponding to the c code in this Op
 
         # now we insert versions for the ops on which we depend...
         scalar_node = Apply(self.scalar_op,
@@ -2895,7 +2888,7 @@ class GpuAdvancedIncSubtensor1(tensor.AdvancedIncSubtensor1, GpuOp):
         out[0] = x
 
     def c_code_cache_version(self):
-        return (5,)
+        return (6,)
 
     def c_code(self, node, name, inputs, outputs, sub):
         if (self.set_instead_of_inc) or \
@@ -2958,7 +2951,7 @@ class GpuAdvancedIncSubtensor1(tensor.AdvancedIncSubtensor1, GpuOp):
              } else {
                  y_rowind_obj = PyInt_FromLong(j);
              }
-             row_y = CudaNdarray_Subscript(py_%(y)s, y_rowind_obj);
+             row_y = CudaNdarray_Subscript((PyObject*)%(y)s, y_rowind_obj);
 
              if (row_y == NULL) {
                   Py_XDECREF(row_y);
@@ -3309,7 +3302,7 @@ class GpuIncSubtensor(tensor.IncSubtensor, GpuOp):
 
         return """
         PyObject * add_result = CudaNdarray_inplace_add((PyObject *) zview,
-                                                        (PyObject *) py_%(x)s);
+                                                        (PyObject *) %(x)s);
 
         if (! add_result )
         {
@@ -3325,7 +3318,7 @@ class GpuIncSubtensor(tensor.IncSubtensor, GpuOp):
     def c_code_cache_version(self):
         parent_version = super(GpuIncSubtensor, self).c_code_cache_version()
         if parent_version:
-            return parent_version + (1,)
+            return parent_version + (2,)
         return ()
 
 
@@ -3628,7 +3621,7 @@ class GpuAllocEmpty(GpuOp):
                 const_shp = tensor.get_scalar_constant_value(s)
             except tensor.NotScalarConstantError:
                 const_shp = None
-            bcast.append(numpy.all(1 == const_shp))
+            bcast.append(1 == const_shp)
         otype = CudaNdarrayType(dtype='float32', broadcastable=bcast)
         output = otype()
         return sh, output
