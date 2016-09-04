@@ -4,7 +4,7 @@
 :mod:`shared_randomstreams` -- Friendly random numbers
 ======================================================
 
-.. module:: shared_randomstreams
+.. module:: theano.tensor.shared_randomstreams
    :platform: Unix, Windows
    :synopsis: symbolic random variables
 .. moduleauthor:: LISA
@@ -21,7 +21,7 @@ object for each such variable, and draw from it as necessary.  We will call this
 random numbers a *random stream*.
 
 For an example of how to use random numbers, see
-:ref:`using_random_numbers`.
+:ref:`Using Random Numbers <using_random_numbers>`.
 
 
 Reference

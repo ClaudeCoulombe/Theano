@@ -2,7 +2,7 @@
 WRITEME
 
 """
-from __future__ import print_function
+from __future__ import absolute_import, print_function, division
 from copy import copy, deepcopy
 from sys import getsizeof
 import sys
@@ -52,15 +52,23 @@ def log_thunk_trace(value, f=sys.stderr):
 
 def thunk_hook(type, value, trace):
     """
-    WRITEME
-
     This function is meant to replace excepthook and do some
     special work if the exception value has a __thunk_trace__
-    field. In that case, it retrieves the field, which should
+    field.
+    In that case, it retrieves the field, which should
     contain a trace as returned by L{traceback.extract_stack},
     and prints it out on L{stderr}.
 
     The normal excepthook is then called.
+
+    Parameters:
+    ----------
+    type
+        Exception class
+    value
+        Exception instance
+    trace
+        Traceback object
 
     Notes
     -----
@@ -157,6 +165,9 @@ def raise_with_op(node, thunk=None, exc_info=None, storage_map=None):
         detailed_err_msg += ("Inputs shapes: %s" % shapes +
                              "\nInputs strides: %s" % strides +
                              "\nInputs values: %s" % scalar_values)
+        if theano.config.exception_verbosity == 'high':
+            detailed_err_msg += "\nInputs type_num: %s" % str(
+                [getattr(getattr(i[0], 'dtype', ''), 'num', '') for i in thunk.inputs])
         if hasattr(node.op, '__input_name__'):
             detailed_err_msg += "\nInputs name: %s\n" % str(node.op.__input_name__)
 
@@ -169,7 +180,7 @@ def raise_with_op(node, thunk=None, exc_info=None, storage_map=None):
     # Print node backtraces
     tr = getattr(node.outputs[0].tag, 'trace', [])
     if type(tr) is list and len(tr) > 0:
-        detailed_err_msg += "\nBacktrace when the node is created:\n"
+        detailed_err_msg += "\nBacktrace when the node is created(use Theano flag traceback.limit=N to make it longer):\n"
 
         # Print separate message for each element in the list of batcktraces
         sio = StringIO()
@@ -227,7 +238,7 @@ def raise_with_op(node, thunk=None, exc_info=None, storage_map=None):
                 dtype = storage_map[k][0].dtype
                 storage_map_item.append(numpy.dtype(dtype).itemsize)
                 if shapeinfo is None:
-                    storage_map_item.append(None)
+                    storage_map_item.append(-1)
                 else:
                     sz = numpy.dtype(dtype).itemsize * numpy.prod(shapeinfo)
                     storage_map_item.append(sz)
@@ -263,7 +274,7 @@ def raise_with_op(node, thunk=None, exc_info=None, storage_map=None):
             else:
                 bytes = getsizeof(storage_map[k][0])
                 storage_map_item.append(bytes)
-                storage_map_item.append(None)
+                storage_map_item.append(-1)
 
             # Flag of shared val
             # storage_map_item[4]
@@ -278,7 +289,7 @@ def raise_with_op(node, thunk=None, exc_info=None, storage_map=None):
         from operator import itemgetter
         storage_map_list.sort(key=itemgetter(3), reverse=True)
         for item in storage_map_list:
-            if item[3] is None:
+            if item[3] == -1:
                 continue
             detailed_err_msg += " - " + item[0] + ", "
             if item[4] is True:
@@ -677,8 +688,6 @@ def streamline(fgraph, thunks, order, post_thunk_old_storage=None,
 
 class LocalLinker(Linker):
     """
-    WRITEME
-
     Useful base class for L{Linker}s which keep all nodes in the graph, and run
     a thunk associated with each node.
 
@@ -704,7 +713,7 @@ class LocalLinker(Linker):
 
 def gc_helper(node_list):
     """
-
+    Return the set of Variable instances which are computed by node_list.
     Parameters
     ----------
     node_list
@@ -740,8 +749,6 @@ def gc_helper(node_list):
 
 class PerformLinker(LocalLinker):
     """
-    WRITEME
-
     Basic L{Linker} subclass that calls the perform method on each L{Op} in
     the L{FunctionGraph} in the order given by L{Linker.schedule}.
 
@@ -755,14 +762,13 @@ class PerformLinker(LocalLinker):
         if schedule:
             self.schedule = schedule
 
-    def accept(self, fgraph, no_recycling=None):
+    def accept(self, fgraph, no_recycling=None, profile=None):
         """
 
         Parameters
         ----------
         fgraph
-            A PerformLinker can have accepted one FunctionGraph instance at a
-            time.
+            A PerformLinker can have accepted one FunctionGraph instance at a time.
         no_recycling
             WRITEME
 
@@ -775,7 +781,8 @@ class PerformLinker(LocalLinker):
         if no_recycling is None:
             no_recycling = []
         if self.fgraph is not None and self.fgraph is not fgraph:
-            return type(self)(allow_gc=self.allow_gc).accept(fgraph, no_recycling)
+            return type(self)(allow_gc=self.allow_gc).accept(
+                fgraph, no_recycling, profile)
             # raise Exception("Cannot accept from a Linker that is already tied to another FunctionGraph.")
         self.fgraph = fgraph
         self.no_recycling = no_recycling
@@ -783,13 +790,14 @@ class PerformLinker(LocalLinker):
 
     def make_all(self, input_storage=None, output_storage=None, storage_map=None):
         """
+        Returns Function to run all nodes, list of input containers, list of outputs
 
         Parameters
         ----------
         input_storage
-            WRITEME
+            list of storages corresponding to fgraph.inputs
         output_storage
-            WRITEME
+            list of storages corresponding to fgraph.outputs
 
         Returns
         -------
@@ -876,8 +884,6 @@ def add_clear_storage(f, computed, storage_map):
 
 class WrapLinker(Linker):
     """
-    WRITEME
-
     This class makes it easier to run several L{LocalLinker}s in parallel, and
     offers some control over how each thunk is run.
 
@@ -939,7 +945,7 @@ class WrapLinker(Linker):
             linkers=[l.clone(allow_gc=allow_gc) for l in self.linkers],
             wrapper=self.wrapper)
 
-    def accept(self, fgraph, no_recycling=None):
+    def accept(self, fgraph, no_recycling=None, profile=None):
         """
 
         Parameters

@@ -1,3 +1,4 @@
+from __future__ import absolute_import, print_function, division
 from copy import deepcopy
 import unittest
 
@@ -10,7 +11,7 @@ from theano.gof.type import Type
 from theano.gof.op import Op
 from theano.gof import fg
 
-from theano.gof.link import *  # noqa
+from theano.gof.link import PerformLinker, WrapLinker, Container
 from theano.compat import cmp
 
 

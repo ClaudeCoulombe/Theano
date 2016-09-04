@@ -1,11 +1,12 @@
-from __future__ import print_function
+from __future__ import absolute_import, print_function, division
 
 from six.moves import xrange
 from theano.gof.type import Type
 from theano.gof import graph
 from theano.gof.graph import Variable, Apply
 from theano.gof.op import Op
-from theano.gof.opt import *  # noqa
+from theano.gof.opt import (OpKeyOptimizer, PatternSub, NavigatorOptimizer,
+                            TopoOptimizer, OpSub)
 
 from theano.gof import destroyhandler
 from theano.gof.fg import FunctionGraph, InconsistencyError

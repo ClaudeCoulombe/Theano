@@ -1,9 +1,12 @@
 """A `Type` and `Op` classes to work with numpy.ndarrays symbolically."""
+from __future__ import absolute_import, print_function, division
+
 from six.moves import builtins
 import sys
 import warnings
 
 import numpy
+from six import integer_types
 from six.moves import xrange
 import numbers
 
@@ -21,7 +24,6 @@ from theano.tensor.type import TensorType, values_eq_approx_always_true
 from theano.tensor.type_other import NoneConst
 from theano import scalar as scal
 from functools import partial
-from six import integer_types
 from theano import compile, printing
 from theano.printing import pprint, min_informative_str
 # For history
@@ -136,13 +138,13 @@ def as_tensor_variable(x, name=None, ndim=None):
         If a new `Variable` instance is created, it will be named with this
         string.
     ndim : None or integer
-        Return a Variable with this many dimensions. Raise TypeError if it's
-        not possible.
+        Return a Variable with this many dimensions.
 
     Raises
     ------
     ValueError
-        If an `Apply` with more than one output is fetched.
+        If an `Apply` with more than one output is fetched or
+        if `x` cannot be made into a Variable with `ndim` dimensions.
     AsTensorError
         If `x` cannot be converted to a TensorType Variable.
 
@@ -461,8 +463,8 @@ if int(config.tensor.cmp_sloppy) > 1:
     # When config.tensor.cmp_sloppy>1 we are even more sloppy. This is
     # useful to test the GPU as they don't use extended precision and
     # this cause some difference bigger then the normal sloppy.
-    float16_atol = 5e-3
-    float16_rtol = 1e-2
+    float16_atol = 1e-2
+    float16_rtol = 5e-2
 
     float32_atol = 5e-4
     float32_rtol = 1e-3
@@ -470,8 +472,8 @@ if int(config.tensor.cmp_sloppy) > 1:
     float64_rtol = 1e-4
     float64_atol = 1e-3
 elif int(config.tensor.cmp_sloppy):
-    float16_atol = 1e-3
-    float16_rtol = 5e-3
+    float16_atol = 5e-3
+    float16_rtol = 1e-2
 
     float32_atol = 1e-4
     float32_rtol = 1e-3
@@ -481,8 +483,8 @@ elif int(config.tensor.cmp_sloppy):
 else:
     # If you change those value in test don't forget to put them back
     # when the test end.  Don't forget the case when the test fail.
-    float16_atol = 5e-4
-    float16_rtol = 5e-4
+    float16_atol = 1e-3
+    float16_rtol = 1e-3
 
     float32_atol = 1e-5
     float32_rtol = 1e-5
@@ -553,7 +555,7 @@ def numpy_scalar(data):
     # handle case where data is numpy.array([])
     if (data.ndim > 0 and
         (len(data.shape) == 0 or
-         __builtins__['max'](data.shape) == 0)):
+         builtins.max(data.shape) == 0)):
         assert numpy.all(numpy.array([]) == data)
         raise EmptyConstantError()
     try:
@@ -588,6 +590,8 @@ def get_scalar_constant_value(orig_v, elemwise=True,
     ----------
     elemwise : bool
         If False, we won't try to go into elemwise. So this call is faster.
+        But we still investigate in Second Elemwise (as this is a substitute
+        for Alloc)
     only_process_constants : bool
         If True, we only attempt to obtain the value of `orig_v` if it's
         directly constant and don't try to dig through dimshuffles, fills,
@@ -606,18 +610,18 @@ def get_scalar_constant_value(orig_v, elemwise=True,
             # to depend on passing it None)
             raise NotScalarConstantError()
 
-        if isinstance(v, (numpy.integer, int, float)):
+        if isinstance(v, (numpy.integer, integer_types, float)):
             return numpy.asarray(v)
 
         if isinstance(v, numpy.ndarray):
-            return numpy_scalar(v)
+            return numpy_scalar(v).copy()
 
         if isinstance(v, Constant):
             if getattr(v.tag, 'unique_value', None) is not None:
                 data = v.tag.unique_value
             else:
                 data = v.data
-            return numpy_scalar(data)
+            return numpy_scalar(data).copy()
 
         if not only_process_constants and getattr(v, 'owner', None):
             if isinstance(v.owner.op, (Alloc, DimShuffle, Rebroadcast,
@@ -626,9 +630,15 @@ def get_scalar_constant_value(orig_v, elemwise=True,
                 v = v.owner.inputs[0]
                 continue
             elif isinstance(v.owner.op, theano.compile.ops.Shape_i):
-                if isinstance(v.owner.inputs[0], Constant):
-                    return numpy.asarray(
-                        v.owner.inputs[0].data.shape[v.owner.op.i])
+                i = v.owner.op.i
+                inp = v.owner.inputs[0]
+                if isinstance(inp, Constant):
+                    return numpy.asarray(inp.data.shape[i])
+                # The shape of a broadcastable dimension is 1
+                if (hasattr(inp.type, 'broadcastable') and
+                        inp.type.broadcastable[i]):
+                    return numpy.asarray(1)
+
             # Don't act as the constant_folding optimization here as this
             # fct is used too early in the optimization phase.  This would
             # mess with the stabilization optimization and be too slow.
@@ -647,26 +657,30 @@ def get_scalar_constant_value(orig_v, elemwise=True,
                              for i in v.owner.inputs]
                     ret = [[None]]
                     v.owner.op.perform(v.owner, const, ret)
-                    return ret[0][0]
-            elif elemwise and isinstance(v.owner.op, Elemwise):
+                    return ret[0][0].copy()
+            # In fast_compile, we don't enable local_fill_to_alloc, so
+            # we need to investigate Second as Alloc. So elemwise
+            # don't disable the check for Second.
+            elif isinstance(v.owner.op, Elemwise):
                 if isinstance(v.owner.op.scalar_op, scal.Second):
                     # We don't need both input to be constant for second
                     shp, val = v.owner.inputs
                     v = val
                     continue
-                elif isinstance(v.owner.op.scalar_op,
-                                get_scalar_constant_value_elemwises):
+                elif elemwise and isinstance(
+                        v.owner.op.scalar_op,
+                        get_scalar_constant_value_elemwises):
                     const = [get_scalar_constant_value(i)
                              for i in v.owner.inputs]
                     ret = [[None]]
                     v.owner.op.perform(v.owner, const, ret)
-                    return ret[0][0]
+                    return ret[0][0].copy()
             elif (isinstance(v.owner.op, theano.tensor.subtensor.Subtensor) and
                   v.ndim == 0):
                 if isinstance(v.owner.inputs[0], TensorConstant):
                     cdata = tuple(v.owner.op.get_constant_idx(v.owner.inputs))
                     try:
-                        return v.owner.inputs[0].data.__getitem__(cdata)
+                        return v.owner.inputs[0].data.__getitem__(cdata).copy()
                     except IndexError:
                         raise IndexError(
                             str(tuple(v.owner.op.idx_list)) +
@@ -786,7 +800,7 @@ def tensor(*args, **kwargs):
 
 def _multi(*fns):
     def f2(f, *names):
-        if names and isinstance(names[0], int):
+        if names and isinstance(names[0], integer_types):
             if names == 1:
                 return f()
             else:
@@ -1015,6 +1029,34 @@ def tensor4(name=None, dtype=None):
     return type(name)
 tensor4s, ftensor4s, dtensor4s, itensor4s, ltensor4s = _multi(
     tensor4, ftensor4, dtensor4, itensor4, ltensor4)
+
+ctensor5 = TensorType('complex64', ((False,) * 5))
+ztensor5 = TensorType('complex128', ((False,) * 5))
+ftensor5 = TensorType('float32', ((False,) * 5))
+dtensor5 = TensorType('float64', ((False,) * 5))
+btensor5 = TensorType('int8', ((False,) * 5))
+wtensor5 = TensorType('int16', ((False,) * 5))
+itensor5 = TensorType('int32', ((False,) * 5))
+ltensor5 = TensorType('int64', ((False,) * 5))
+
+
+def tensor5(name=None, dtype=None):
+    """Return a symbolic 5-D variable.
+
+    Parameters
+    ----------
+    dtype: numeric type
+        None means to use theano.config.floatX.
+    name
+        A name to attach to this variable.
+
+    """
+    if dtype is None:
+        dtype = config.floatX
+    type = TensorType(dtype, (False, False, False, False, False))
+    return type(name)
+tensor5s, ftensor5s, dtensor5s, itensor5s, ltensor5s = _multi(
+    tensor5, ftensor5, dtensor5, itensor5, ltensor5)
 
 
 Tensor = TensorType
@@ -1290,7 +1332,7 @@ class MaxAndArgmax(Op):
     def make_node(self, x, axis=None):
         x = _as_tensor_variable(x)
 
-        if isinstance(axis, (int, numpy.integer)):
+        if isinstance(axis, (integer_types, numpy.integer)):
             axis = [int(axis)]
         elif isinstance(axis, numpy.ndarray) and axis.ndim == 0:
             axis = [int(axis)]
@@ -1307,7 +1349,7 @@ class MaxAndArgmax(Op):
             else:
                 assert (axis.dtype.startswith("int") or
                         axis.dtype.startswith("uint"))
-                if isinstance(axis.data, (int, numpy.integer)) or \
+                if isinstance(axis.data, (integer_types, numpy.integer)) or \
                    (isinstance(axis.data, numpy.ndarray) and
                         axis.data.ndim == 0):
                     axis = [int(axis.data)]
@@ -1355,12 +1397,13 @@ class MaxAndArgmax(Op):
         if axes is None:
             axes = tuple(range(x.ndim))
         else:
-            axes = tuple(axes)
+            axes = tuple(int(ax) for ax in axes)
         max[0] = theano._asarray(numpy.max(x, axes),
                                  dtype=node.outputs[0].dtype)
         # Numpy does not support multiple axes for argmax
         # Work around
-        keep_axes = numpy.array([i for i in range(x.ndim) if i not in axes])
+        keep_axes = numpy.array([i for i in range(x.ndim) if i not in axes],
+                                dtype='int64')
         # Not-reduced axes in front
         transposed_x = numpy.transpose(x, numpy.concatenate((keep_axes, axes)))
         reshaped_x = transposed_x.reshape(transposed_x.shape[:len(keep_axes)] +
@@ -1396,8 +1439,6 @@ class MaxAndArgmax(Op):
         %(axis_code)s
         %(max)s = (PyArrayObject*)PyArray_Max(%(x)s, axis, NULL);
         if(%(max)s == NULL){
-            PyErr_SetString(PyExc_ValueError,
-                         "MaxAndArgmax, max failed");
             %(fail)s;
         }
         if(!PyArray_CheckExact(%(max)s)){
@@ -1409,7 +1450,6 @@ class MaxAndArgmax(Op):
 
         %(argmax)s = (PyArrayObject*)PyArray_ArgMax(%(x)s, axis, NULL);
         if(%(argmax)s == NULL){
-            PyErr_SetString(PyExc_ValueError, "MaxAndArgmax, argmax failed");
             Py_CLEAR(%(max)s);
             %(fail)s;
         }
@@ -1431,7 +1471,7 @@ class MaxAndArgmax(Op):
         return ret % locals()
 
     def c_code_cache_version(self):
-        return (3,)
+        return (4,)
 
     def infer_shape(self, node, shapes):
         ishape, axis_shape = shapes
@@ -1535,7 +1575,7 @@ def makeKeepDims(x, y, axis):
 
     if axis is None:
         axis = list(range(x.type.ndim))
-    elif isinstance(axis, (int, numpy.integer)):
+    elif isinstance(axis, (integer_types, numpy.integer)):
         axis = [axis]
     elif isinstance(axis, numpy.ndarray) and axis.ndim == 0:
         axis = [int(axis)]
@@ -1543,7 +1583,7 @@ def makeKeepDims(x, y, axis):
         axis = [int(a) for a in axis]
     newaxis = []
     for a in axis:
-        if not isinstance(a, int):
+        if not isinstance(a, integer_types):
             raise ValueError(
                 "keepdims option can be used only with constant axis")
         if a < 0:
@@ -2202,6 +2242,16 @@ def chi2sf(x, k):
 
 
 @_scal_elemwise
+def j0(a):
+    """Bessel function of the 0'th kind"""
+
+
+@_scal_elemwise
+def j1(a):
+    """Bessel function of the 1'th kind"""
+
+
+@_scal_elemwise
 def real(z):
     """Return real component of complex-valued tensor `z`"""
 _tensor_py_operators.real = property(real)
@@ -2248,20 +2298,52 @@ pprint.assign(fill, printing.FunctionPrinter('fill'))
 
 
 @constructor
-def ones_like(model, dtype=None):
-    """equivalent of numpy.ones_like"""
+def ones_like(model, dtype=None, opt=False):
+    """equivalent of numpy.ones_like
+    Parameters
+    ----------
+    model : tensor
+    dtype : data-type, optional
+    opt : If True, we will return a constant instead of a graph when possible.
+          Useful for Theano optimization, not for user building a graph as this
+          have the consequence that model isn't always in the graph.
+
+    Returns
+    -------
+    tensor
+        tensor the shape of model containing ones of the type of dtype.
+    """
     if dtype is None:
         dtype = model.type.dtype
-    ret = fill(model, constant(1.0, dtype=dtype))
-    return ret
+    ret = constant(1.0, dtype=dtype)
+    if opt and ret.type == model.type:
+        return ret
+    return fill(model, ret)
 
 
 @constructor
-def zeros_like(model, dtype=None):
-    """equivalent of numpy.zeros_like"""
+def zeros_like(model, dtype=None, opt=False):
+    """equivalent of numpy.zeros_like
+    Parameters
+    ----------
+    model : tensor
+    dtype : data-type, optional
+    opt : If True, we will return a constant instead of a graph when possible.
+          Useful for Theano optimization, not for user building a graph as this
+          have the consequence that model isn't always in the graph.
+
+    Returns
+    -------
+    tensor
+        tensor the shape of model containing zeros of the type of dtype.
+    """
+
     if dtype is None:
         dtype = model.type.dtype
-    return fill(model, constant(0.0, dtype=dtype))
+    ret = constant(0.0, dtype=dtype)
+    if opt and ret.type == model.type:
+        return ret
+    return fill(model, ret)
 
 
 def zeros(shape, dtype=None):
@@ -2653,15 +2735,18 @@ class Alloc(gof.Op):
         sh = [as_tensor_variable(s) for s in shape]
         bcast = []
         for i, s in enumerate(sh):
-            if config.exception_verbosity == 'high':
-                s_as_str = '\n' + min_informative_str(s)
-            else:
-                s_as_str = str(s)
+            def err_str():
+                if config.exception_verbosity == 'high':
+                    return '\n' + min_informative_str(s)
+                else:
+                    return str(s)
             if s.type.dtype[:3] not in ('int', 'uin'):
+                s_as_str = err_str()
                 raise TypeError('Shape arguments to Alloc must be integers, '
                                 'but argument %s is not for apply node: %s' %
                                 (i, s_as_str))
             if s.ndim != 0:
+                s_as_str = err_str()
                 raise TypeError(
                     "Each shape dimension to Alloc must be a scalar, ",
                     'but dimension %s have %d dimensions for apply node: %s' %
@@ -2734,13 +2819,14 @@ class Alloc(gof.Op):
             }
 
             // This function takes care of broadcasting
-            PyArray_CopyInto(%(zz)s, %(vv)s);
+            if (PyArray_CopyInto(%(zz)s, %(vv)s) == -1)
+              %(fail)s
             """ % dict(vv=vv, ndim=ndim, zz=zz, fail=fail)
 
         return code
 
     def c_code_cache_version(self):
-        return (1,)
+        return (2,)
 
     def infer_shape(self, node, input_shapes):
         return [node.inputs[1:]]
@@ -3071,7 +3157,7 @@ def mean(input, axis=None, dtype=None, op=False, keepdims=False,
 
     if axis is None:
         axis = list(range(input.ndim))
-    elif isinstance(axis, (int, numpy.integer)):
+    elif isinstance(axis, (integer_types, numpy.integer)):
         axis = [axis]
     elif isinstance(axis, numpy.ndarray) and axis.ndim == 0:
         axis = [int(axis)]
@@ -3089,7 +3175,7 @@ def mean(input, axis=None, dtype=None, op=False, keepdims=False,
 
 
 @constructor
-def var(input, axis=None, keepdims=False):
+def var(input, axis=None, ddof=0, keepdims=False, corrected=False):
     """
     Computes the variance along the given axis(es) of a tensor `input`.
 
@@ -3098,24 +3184,35 @@ def var(input, axis=None, keepdims=False):
     axis: None or int or (list of int) (see `Sum`)
         Compute the variance along this axis of the tensor.
         None means all axes (like numpy).
+    ddof: Degrees of freedom; 0 would compute the ML estimate, 1 would compute
+        the unbiased estimate.
     keepdims : bool
         If this is set to True, the axes which are reduced are
         left in the result as dimensions with size one. With this option,
         the result will broadcast correctly against the original tensor.
+    corrected : bool
+        If this is set to True, the 'corrected_two_pass' algorithm is
+        used to compute the variance.
+        Refer : http://www.cs.yale.edu/publications/techreports/tr222.pdf
 
     Notes
     -----
-    It uses the two-pass algorithm for more stable results.
+    Default uses the two-pass algorithm (reference below).
     https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Two-pass_algorithm
-    There exist other implementations that are even more stable, but probably
-    slower.
+    Also supports 'corrected_two_pass' algorithm (using the 'corrected' flag)
+    which is numerically more stable. There exist other implementations that
+    offer better stability, but probably slower.
 
     """
+
+    if isinstance(ddof, (bool)):
+        raise ValueError('Parameter keepdims is now at index 3: (input, \
+                          axis=None, ddof=0, keepdims=False, corrected=False)')
 
     input_ndim = input.type.ndim
     if axis is None:
         axis = list(range(input_ndim))
-    elif isinstance(axis, (int, numpy.integer)):
+    elif isinstance(axis, (integer_types, numpy.integer)):
         axis = [axis]
     elif isinstance(axis, numpy.ndarray) and axis.ndim == 0:
         axis = [int(axis)]
@@ -3129,37 +3226,67 @@ def var(input, axis=None, keepdims=False):
     centered_input = input - mean_input
 
     # return the mean sqr
-    v = mean((centered_input ** 2), axis, keepdims=keepdims)
+    if ddof == 0:
+        v = mean((centered_input ** 2), axis, keepdims=keepdims)
+    else:
+        shp = shape(input) - ddof
+        v = sum((centered_input ** 2), axis=axis, keepdims=keepdims)
+        for i in axis:
+            v = true_div(v, shp[i])
+
+    # use 'corrected_two_pass' algorithm
+    if corrected:
+        if ddof == 0:
+            error = mean(centered_input, axis, keepdims=keepdims) ** 2
+        else:
+            shp = shape(input) - ddof
+            shp_inp = shape(input)
+            error = sum(centered_input, axis=axis, keepdims=keepdims) ** 2
+            for i in axis:
+                error = true_div(error, shp[i] * shp_inp[i])
+        v = v - error
+
     v.name = 'var'
     return v
 
 
 @constructor
-def std(input, axis=None, keepdims=False):
+def std(input, axis=None, ddof=0, keepdims=False, corrected=False):
     """
     Computes the standard deviation along the given axis(es) of a tensor `input`.
 
     Parameters
     ----------
-    axis : None or int or (list of int) (see `Sum`)
-        Compute the standard deviation along this axis of the tensor.
+    axis: None or int or (list of int) (see `Sum`)
+        Compute the variance along this axis of the tensor.
         None means all axes (like numpy).
+    ddof: Degrees of freedom; 0 would compute the ML estimate, 1 would compute
+        the unbiased estimate.
     keepdims : bool
-        If this is set to True, the axes which are reduced are left in the
-        result as dimensions with size one. With this option, the result will
-        broadcast correctly against the original tensor.
+        If this is set to True, the axes which are reduced are
+        left in the result as dimensions with size one. With this option,
+        the result will broadcast correctly against the original tensor.
+    corrected : bool
+        If this is set to True, the 'corrected_two_pass' algorithm is
+        used to compute the variance.
+        Refer : http://www.cs.yale.edu/publications/techreports/tr222.pdf
 
     Notes
     -----
-    It calls `var()` and `var()` uses the two-pass algorithm for more stable
-    results.
+    It calls 'var()' and 'var()' uses the two-pass algorithm (reference below).
     https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Two-pass_algorithm
-    There exist other implementations that are even more stable, but probably
-    slower.
+    Function 'var()' also supports 'corrected_two_pass' algorithm (using the
+    'corrected' flag) which is numerically more stable. There exist other
+    implementations that offer better stability, but probably slower.
 
     """
 
-    ret = sqrt(var(input=input, axis=axis, keepdims=keepdims))
+    if isinstance(ddof, (bool)):
+        raise ValueError('Parameter keepdims is now at index 3: (input, \
+                          axis=None, ddof=0, keepdims=False, corrected=False)')
+
+    ret = sqrt(var(input=input, axis=axis, ddof=ddof,
+                   keepdims=keepdims, corrected=corrected))
     ret.name = 'std'
     return ret
 
@@ -3214,10 +3341,13 @@ def minimum(x, y):
 
 def div_proxy(x, y):
     """Proxy for either true_div or int_div, depending on types of x, y."""
-    f = eval('%s_div' % scal.int_or_true_div(
+    f = scal.int_or_true_div(
         as_tensor_variable(x).dtype in discrete_dtypes,
-        as_tensor_variable(y).dtype in discrete_dtypes))
-    return f(x, y)
+        as_tensor_variable(y).dtype in discrete_dtypes)
+    if f is scal.int_div:
+        return int_div(x, y)
+    else:
+        return true_div(x, y)
 
 
 def divmod(x, y):
@@ -3333,7 +3463,7 @@ pprint.assign(pow, printing.OperatorPrinter('**', 1, 'right'))
 ##########################
 
 
-def extract_constant(x, elemwise=True):
+def extract_constant(x, elemwise=True, only_process_constants=False):
     """
     This function is basically a call to tensor.get_scalar_constant_value.
 
@@ -3345,7 +3475,9 @@ def extract_constant(x, elemwise=True):
 
     """
     try:
-        x = get_scalar_constant_value(x, elemwise=elemwise)
+        x = get_scalar_constant_value(x,
+                                      elemwise,
+                                      only_process_constants)
     except NotScalarConstantError:
         pass
     if ((isinstance(x, scal.ScalarVariable) or
@@ -3372,52 +3504,52 @@ def transpose(x, axes=None):
     return ret
 
 
-def batched_dot(x, y):
+def batched_dot(a, b):
     """
-    This function computes the dot product between the two tensors, by
-    iterating over the first dimension using scan.
+    Compute the batched dot product of two variables:
 
-    Parameters
-    ----------
-    x : tensor
-        A Tensor with sizes e.g.: for  3D (dim1, dim3, dim2).
-    y : tensor
-        A Tensor with sizes e.g.: for 3D (dim1, dim2, dim4).
+        batched_dot(a, b)[i] = dot(a[i], b[i])
 
-    Returns
-    -------
-    tensor
-        A tensor of size e.g. if it is 3D: (dim1, dim3, dim4).
+    Note that this batched_dot function does one of three things, in the
+    following sequence:
 
-    Notes
-    -----
-    This is a subset of numpy.einsum, but we do not provide it for now.
-    But numpy einsum is slower than dot or tensordot:
-    http://mail.scipy.org/pipermail/numpy-discussion/2012-October/064259.html
+        1.  If either a or b is a vector, it returns the batched elementwise
+            product without calling the Theano BatchedDot op.
 
-    Examples
-    --------
-    >>> first = tensor.tensor3('first')
-    >>> second = tensor.tensor3('second')
-    >>> result = batched_dot(first, second)
+        2.  If both a and b have either 2 or 3 dimensions, it calls Theano's
+            BatchedDot op on a and b.
 
+        3.  If either a or b has more than 3 dimensions, it calls Theano's
+            batched_tensordot function with appropriate axes. The
+            batched_tensordot function expresses high-dimensional batched
+            dot products in terms of batched matrix-matrix dot products, so
+            it may be possible to futherize optimize for performance.
     """
-    result, updates = theano.scan(
-        fn=lambda x_mat, y_mat:
-        theano.tensor.dot(x_mat, y_mat),
-        outputs_info=None,
-        sequences=[x, y],
-        non_sequences=None)
-    return result
+    a, b = as_tensor_variable(a), as_tensor_variable(b)
+
+    if a.ndim == 0:
+        raise TypeError("a must have at least one (batch) axis")
+    elif b.ndim == 0:
+        raise TypeError("b must have at least one (batch) axis")
+    elif a.ndim == 1:
+        return a.dimshuffle(*([0] + ["x"] * (b.ndim - 1))) * b
+    elif b.ndim == 1:
+        return a * b.dimshuffle(*([0] + ["x"] * (a.ndim - 1)))
+    elif a.ndim > 3 or b.ndim > 3:
+        return batched_tensordot(
+            a, b, [[a.ndim - 1], [numpy.maximum(1, b.ndim - 2)]])
+    else:
+        # avoid circular import
+        return theano.tensor.blas.BatchedDot()(a, b)
 
 
 def batched_tensordot(x, y, axes=2):
     """
-    Compute the tensordot product.
+    Compute a batched tensordot product.
 
-    A hybrid of batch_dot and tensordot, this function computes the
+    A hybrid of batched_dot and tensordot, this function computes the
     tensordot product between the two tensors, by iterating over the
-    first dimension using scan to perform a sequence of tensordots.
+    first dimension to perform a sequence of tensordots.
 
     Parameters
     ----------
@@ -3753,7 +3885,7 @@ class Join(Op):
                 as_tensor_variable_args[0].type.broadcastable)
             ndim = len(bcastable)
             # Axis can also be a constant
-            if not isinstance(axis, int):
+            if not isinstance(axis, integer_types):
                 try:
                     # Note : `get_scalar_constant_value` returns a ndarray not
                     # an int
@@ -3761,7 +3893,7 @@ class Join(Op):
 
                 except NotScalarConstantError:
                     pass
-            if isinstance(axis, int):
+            if isinstance(axis, integer_types):
                 # Basically, broadcastable -> length 1, but the
                 # converse does not hold. So we permit e.g. T/F/T
                 # joins, and if they fail at runtime they fail, but if
@@ -3995,6 +4127,11 @@ def roll(x, shift, axis=None):
             return roll(y, shift, axis=0).reshape(x.shape)
         else:
             axis = 0
+
+    # Shift may be larger than the size of the axis. If so, since the
+    # roll operation is cyclic, we can take the shift modulo the size
+    # of the axis
+    shift = shift % x.shape[axis]
 
     # A slice of all elements in a dimension ':'
     allslice = slice(None)
@@ -4243,18 +4380,40 @@ def get_vector_length(v):
     # If we take a slice, we know how many elements it will result in
     if ((v.owner and
          isinstance(v.owner.op, theano.tensor.subtensor.Subtensor) and
-         isinstance(v.owner.op.idx_list[0], slice))):
+         isinstance(v.owner.op.idx_list[0], slice) and
+         v.owner.inputs[0].owner and
+         isinstance(v.owner.inputs[0].owner.op, theano.compile.ops.Shape))):
         start = extract_constant(theano.tensor.subtensor.get_idx_list(
             v.owner.inputs, v.owner.op.idx_list)[0].start)
         stop = extract_constant(theano.tensor.subtensor.get_idx_list(
             v.owner.inputs, v.owner.op.idx_list)[0].stop)
+        step = extract_constant(theano.tensor.subtensor.get_idx_list(
+            v.owner.inputs, v.owner.op.idx_list)[0].step)
+
+        ndim = v.owner.inputs[0].owner.inputs[0].ndim
+        types = (numbers.Integral, numpy.integer)
         if start is None:
             start = 0
+        elif isinstance(start, types) and start < 0:
+            start += ndim
+            if start < 0:
+                start = 0
         if stop is None:
-            stop = 0
-        if ((isinstance(stop, numbers.Integral) and
-             isinstance(start, numbers.Integral))):
-            return stop - start
+            stop = ndim
+        elif isinstance(stop, types):
+            if stop > ndim:
+                stop = ndim
+            elif stop < 0:
+                stop += ndim
+        if step is None:
+            step = 1
+
+        if (isinstance(stop, types) and
+                isinstance(start, types) and
+                isinstance(step, types) and
+                start >= 0 and stop >= 0 and
+                step > 0 and stop >= start):
+            return (stop - start - 1) // step + 1
     if isinstance(v, Variable):
         msg = theano.printing.debugprint(v, file='str')
     else:
@@ -4308,7 +4467,7 @@ class Reshape(Op):
 
     def __init__(self, ndim, name=None):
         self.ndim = ndim
-        self.name = name
+        assert name is None, 'name attribute for Reshape has been deprecated'
 
     def __str__(self):
         return '%s{%s}' % (self.__class__.__name__, self.ndim)
@@ -4401,6 +4560,11 @@ class Reshape(Op):
         # Here, we only simplify if the shape (node.inputs[1]) is a constant,
         # ideally it would suffice to check that it is always non-negative.
 
+        # If current variable is a scalar and its dimensionality should
+        # change to self.ndim, then use size 1 for all new dimensions.
+        if len(ishapes[0]) == 0:
+            return [(1,) * self.ndim]
+
         requ = node.inputs[1]
         if isinstance(requ, theano.tensor.TensorConstant):
             requ = list(requ.data)
@@ -4412,23 +4576,24 @@ class Reshape(Op):
                     if ele == -1:
                         requ[i] = missing
             elif crit == 1:  # we reshape to -1
-                requ = [mul(*ishapes[0])]
+                requ = [mul(*ishapes[0])] if ishapes[0] else [1]
             elif crit > 1:
                 raise ValueError('shape argument to Reshape.perform'
                                  ' must have at most one entry equal to -1')
             return [requ]
         else:
-            oshape = []
-            for i in xrange(self.ndim):
-                default_os_i = theano.tensor.opt.Shape_i(i)(node.outputs[0])
-                try:
-                    os_i = get_scalar_constant_value(node.inputs[1][i]).item()
-                    if os_i == -1:
-                        os_i = default_os_i
-                except NotScalarConstantError:
-                    os_i = default_os_i
-                oshape.append(os_i)
-            return [tuple(oshape)]
+            new_dims = [node.inputs[1][i] for i in xrange(self.ndim)]
+            # since new_dims can have negative value (-1), the
+            # multiplication of all values should be negated
+            # to give a positive value.
+            # To avoid optimization complexity, we avoid checking
+            # for the case when there are two or more '-1' values.
+            if self.ndim:
+                rest_size = (mul(*ishapes[0]) // -mul(*new_dims))
+            return [tuple([switch(eq(new_dims[i], -1),
+                                  rest_size,
+                                  new_dims[i])
+                           for i in xrange(self.ndim)])]
 
     def c_code_cache_version(self):
         return (6,)
@@ -4478,7 +4643,7 @@ class Reshape(Op):
             return Op.c_code(self, node, name, inputs, outputs, sub)
 
 
-def reshape(x, newshape, ndim=None, name=None):
+def reshape(x, newshape, ndim=None):
     if ndim is None:
         newshape = as_tensor_variable(newshape)
         if newshape.ndim != 1:
@@ -4494,7 +4659,7 @@ def reshape(x, newshape, ndim=None, name=None):
                 "to know what the number of dimensions of the reshaped "
                 "variable will be. You can provide the 'ndim' keyword "
                 "argument to 'reshape' to avoid this problem." % newshape)
-    op = Reshape(ndim, name)
+    op = Reshape(ndim)
     rval = op(x, newshape)
     return rval
 
@@ -4506,6 +4671,7 @@ class Flatten(Op):
     Flattens a tensor to `outdim` dimensions by preserving the leading
     outdim - 1 shape components.
 
+    .. note:: The interface Flatten(Op) is deprecated, you should use flatten.
     """
     view_map = {0: [0]}
 
@@ -4513,6 +4679,11 @@ class Flatten(Op):
     __props__ = ("outdim",)
 
     def __init__(self, outdim=1):
+        warnings.warn(
+            "Flatten class is deprecated, "
+            "please use flatten method instead.",
+            DeprecationWarning,
+            stacklevel=4)
         self.outdim = int(outdim)
 
     def __str__(self):
@@ -4651,8 +4822,70 @@ class Flatten(Op):
         """ % locals()
 
 
+def is_flat(var, outdim=1):
+    """
+    Verifies the dimensionality of the var is equal to
+    outdim. This method is usually called after flatten method on a
+    variable, where the first outdim-1 dimension size(s) of the variable
+    is kept intact, and the last dimension size of the variable is made
+    equal to the multiplication of its remaining dimension size(s), such that
+    the variable would end up with as many dimension as outdim.
+
+    Parameters
+    ----------
+        var : theano.tensor.var.TensorVariable
+            the theano var on which the dimensionality is checked.
+
+        outdim : int
+            the expected dimensionality of var.
+
+    Returns
+    -------
+    bool
+        the comparison result of var's dim
+        and the expected outdim.
+    """
+    return var.ndim == outdim
+
+
 def flatten(x, outdim=1):
-    return Flatten(outdim)(x)
+    """
+    Reshapes the variable x by keeping
+    the first outdim-1 dimension size(s) of x the same,
+    and making the last dimension size of x equal to
+    the multiplication of its remaining dimension size(s).
+
+    Parameters
+    ----------
+        x : theano.tensor.var.TensorVariable
+            the variable that should be reshaped.
+
+        outdim : int
+            the number of dimensions of the returned variable
+
+    Returns
+    -------
+    theano.tensor.var.TensorVariable
+        the flattend variable with dimensionality of outdim
+    """
+    # Any input variable can be flattened to have outdim of 1,
+    # even if it's a scalar. Otherwise, outdim must be positive
+    # and smaller than x.ndim.
+    if outdim < 1 or (outdim > 1 and outdim > x.ndim):
+        raise ValueError('outdim %s out of bound [1, %d)'
+                         % (outdim, x.ndim + 1))
+
+    if outdim > 1:
+        dims = tuple(x.shape[:outdim - 1]) + (-1,)
+    else:
+        dims = (-1,)
+    x_reshaped = x.reshape(dims)
+    bcast_kept_dims = x.broadcastable[:outdim - 1]
+    bcast_new_dim = python_all(x.broadcastable[outdim - 1:])
+    broadcastable = bcast_kept_dims + (bcast_new_dim,)
+    x_reshaped = theano.tensor.addbroadcast(
+        x_reshaped, *filter(lambda i: broadcastable[i], range(outdim)))
+    return x_reshaped
 
 
 # class TileGrad(Op):
@@ -4850,6 +5083,7 @@ class ARange(Op):
         outputs = [tensor(self.dtype, (False,))]
         return Apply(self, inputs, outputs)
 
+    @theano.configparser.change_flags(warn_float64='ignore')
     def infer_shape(self, node, i_shapes):
         # Note start, stop and step can be float numbers.
         start, stop, step = node.inputs
@@ -6104,7 +6338,7 @@ class AllocEmpty(gof.Op):
 
     # specify the type of the data
     def __init__(self, dtype):
-        assert isinstance(dtype, str)
+        assert isinstance(dtype, str), dtype
         self.dtype = dtype.lower()
 
     def validate_shape(self, shape):
@@ -6129,7 +6363,18 @@ class AllocEmpty(gof.Op):
         # The outut can contain nan/inf.  output.type is a new
         # instance, so we can do this only for that variable.
         output.type.filter_checks_isfinite = False
+
+        # We can't reuse filter_checks_isfinite as by default it is
+        # False and it is set to true only in DebugMode.
+        # We can't set it in the type as other make_node can reuse the type.
+        # We can't set it in the variable as it isn't copied when we copy
+        # the variale. So we set it in the tag.
+        output.tag.nan_guard_mode_check = False
         return Apply(self, shape, [output])
+
+    def debug_perform(self, node, inputs, out_):
+        self.perform(node, inputs, out_)
+        out_[0][0].fill(-123456789)
 
     def perform(self, node, inputs, out_):
         out, = out_

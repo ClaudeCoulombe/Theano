@@ -1,6 +1,8 @@
+from __future__ import absolute_import, print_function, division
 import theano
 from theano.gradient import DisconnectedType
 from theano.gof import Op, Apply, TopoOptimizer
+from theano.gof.opt import copy_stack_trace
 from theano import tensor
 import theano.sandbox.cuda as cuda
 
@@ -244,7 +246,7 @@ def conv3d(signals, filters,
     out_4d = tensor.nnet.conv2d(
         signals.reshape(_signals_shape_4d),
         filters.reshape(_filters_shape_4d),
-        image_shape=conv2d_signal_shape,
+        input_shape=conv2d_signal_shape,
         filter_shape=conv2d_filter_shape,
         border_mode=border_mode[1])  # ignoring border_mode[2]
 
@@ -286,7 +288,32 @@ def conv3d(signals, filters,
                 _signals_shape_5d[3] - _filters_shape_5d[3] + 1,
                 _signals_shape_5d[4] - _filters_shape_5d[4] + 1,
             ))
-    elif border_mode[0] in ('full', 'same'):
+    elif border_mode[0] == 'full':
+        if _filters_shape_5d[1] != 1:
+            # pad out_tmp with zeros to have full convolution
+            out_tmp_padded = tensor.zeros(dtype=out_tmp.dtype, shape=(
+                _signals_shape_5d[0],  # Ns
+                _signals_shape_5d[1] + 2 * (_filters_shape_5d[1] - 1),  # Ts
+                _filters_shape_5d[0],  # Nf
+                _filters_shape_5d[1],  # Tf
+                _signals_shape_5d[3] + _filters_shape_5d[3] - 1,
+                _signals_shape_5d[4] + _filters_shape_5d[4] - 1,
+            ))
+            out_tmp_padded = tensor.set_subtensor(
+                out_tmp_padded[:,
+                               (_filters_shape_5d[1] - 1):(_signals_shape_5d[1] + _filters_shape_5d[1] - 1),
+                               :, :, :, :],
+                out_tmp)
+            out_5d = diagonal_subtensor(out_tmp_padded, 1, 3).sum(axis=3)
+        else:  # for tf==1, no sum along tf, the ts-axis of the output is unchanged!
+            out_5d = out_tmp.reshape((
+                _signals_shape_5d[0],
+                _signals_shape_5d[1],
+                _filters_shape_5d[0],
+                _signals_shape_5d[3] + _filters_shape_5d[3] - 1,
+                _signals_shape_5d[4] + _filters_shape_5d[4] - 1,
+            ))
+    elif border_mode[0] == 'same':
         raise NotImplementedError('sequence border mode', border_mode[0])
     else:
         raise ValueError('invalid border mode', border_mode[1])
@@ -328,7 +355,11 @@ def make_gpu_optimizer(op, to_gpu):
                 new_inp = list(node.inputs)
                 for idx in to_gpu:
                     new_inp[idx] = cuda.gpu_from_host(new_inp[idx])
-                return [cuda.host_from_gpu(op()(*new_inp))]
+                result_node = op()(*new_inp)
+                copy_stack_trace(node.outputs[0], result_node)
+                transfer_node = cuda.host_from_gpu(result_node)
+                copy_stack_trace(node.outputs[0], transfer_node)
+                return [transfer_node]
         if node.op == cuda.gpu_from_host:
             # gpu_from_host(op) -> op(gpu_from_host)
             host_input = node.inputs[0]
@@ -338,7 +369,9 @@ def make_gpu_optimizer(op, to_gpu):
                 new_inp = list(op_node.inputs)
                 for idx in to_gpu:
                     new_inp[idx] = cuda.gpu_from_host(new_inp[idx])
-                return [op()(*new_inp)]
+                new_node = op()(*new_inp)
+                copy_stack_trace(host_input, new_node)
+                return [new_node]
         return False
     local_to_gpu.__name__ = "local_to_gpu_" + op.__name__
     cuda.opt.register_opt()(local_to_gpu)
@@ -355,6 +388,7 @@ def local_inplace_DiagonalSubtensor(node):
             not node.op.inplace):
         new_op = node.op.__class__(inplace=True)
         new_node = new_op(*node.inputs)
+        copy_stack_trace(node.outputs[0], new_node)
         return [new_node]
     return False
 theano.compile.optdb.register(

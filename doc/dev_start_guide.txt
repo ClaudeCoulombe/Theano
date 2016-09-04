@@ -4,6 +4,22 @@
 Developer Start Guide
 =====================
 
+Contributing
+============
+
+You want to contribute to Theano? That is great! This page explain our
+workflow and some resource for doing so.
+
+Looking for an idea for a first contribution? Check the `github issues
+<https://github.com/Theano/Theano/issues?q=is%3Aopen+is%3Aissue+label%3A%22Easy+fix%22>`_
+with a label ``easy fix``. They are good starter. It is recommanded
+that you write on the issue you want to work on it. This help make
+sure it is up to date and see if nobody else is working on it. Also,
+we can sometimes provides more information about it.  There is also
+the label `NeedSomeoneToFinish
+<https://github.com/Theano/Theano/labels/NeedSomeoneToFinish>`_ that is
+interresting to check. The difficulty level is variable.
+
 Resources
 =========
 
@@ -21,210 +37,73 @@ To get up to speed, you'll need to
 - Learn some non-basic Python to understand what's going on in some of the
   trickier files (like tensor.py).
 - Go through the `NumPy documentation`_.
-- Learn to write reStructuredText_ for epydoc_ and Sphinx_.
+- Learn to write reStructuredText_ for Sphinx_.
 - Learn about how unittest_ and nose_ work
 
 .. _Sphinx: http://sphinx.pocoo.org/
 .. _reStructuredText: http://docutils.sourceforge.net/rst.html
-.. _epydoc: http://epydoc.sourceforge.net/
+.. _Allowed docstring sections in Napoleon: https://sphinxcontrib-napoleon.readthedocs.org/en/latest/#docstring-sections
 .. _NumPy documentation: http://docs.scipy.org/numpy/
 .. _unittest: http://docs.python.org/library/unittest.html
-.. _nose: http://somethingaboutorange.com/mrl/projects/nose/
-
-
-Installation and configuration
-==============================
-
-To obtain developer access: register with `GitHub
-<http://www.github.com/>`_ and create a fork of `Theano
-<http://www.github.com/Theano/Theano>`_.
-
-This will create your own Theano project on GitHub, referred later
-as "YourProfile/Theano", or "origin", from which you will be able to
-contribute to the original Theano/Theano, also called "central".
-
-
-Create a local copy
--------------------
-
-Clone your fork locally with
-
-.. code-block:: bash
-
-    git clone git@github.com:YOUR_GITHUB_LOGIN/Theano.git
-
-For this URL to work, you must set your public ssh keys inside your
-`github account setting <https://github.com/settings/ssh>`_.
-
-From your local repository, your own fork on GitHub will be called "origin".
-
-Then, add a reference to the original ("central") Theano repository with
-
-.. code-block:: bash
-
-    git remote add central git://github.com/Theano/Theano.git
-
-You can choose another name than "central" to reference Theano/Theano
-(for instance, NumPy uses "upstream"), but this documentation will stick
-to "central."
-
-You can then test your installation of Theano by following the steps of
-:ref:`testing_installation`.
-
-
-Using your local copy
----------------------
-
-To update your library to the latest revision, you should have a local branch
-that tracks central/master. You can add one (named "trunk" here) with:
-
-.. code-block:: bash
-
-    git fetch central
-    git branch trunk central/master
-
-Once you have such a branch, in order to update it, do:
-
-.. code-block:: bash
-
-    git checkout trunk
-    git pull
-
-Keep in mind that this branch should be "read-only": if you want to
-patch Theano, you should work in another branch, like described in the
-:ref:`dev_workflow` section below.
-
-
-Configure Git
--------------
-
-On your local machine, you need to configure git with basic informations:
-
-.. code-block:: bash
-
-   git config --global user.email you@yourdomain.example.com
-   git config --global user.name "Your Name Comes Here"
-
-
-You can also instruct git to use color in diff. For this, you need to
-add those lines in the file ~/.gitconfig
-
-.. code-block:: cfg
-
-    [color]
-       branch = auto
-       diff = auto
-       interactive = auto
-       status = auto
-
-
-.. _dev_workflow:
-
-Development Workflow
-====================
-
-Start a new local branch
-------------------------
-
-When working on a new feature in your own fork, start from an up-to-date copy
-of the `master` branch (the principal one) of the central repository
-(Theano/Theano on GitHub):
-
-.. code-block:: bash
-
-    git fetch central
-    git checkout -b my_shiny_feature central/master
-
-.. note::
-
-    This last line is a shortcut for:
-
-    .. code-block:: bash
-
-        git branch my_shiny_feature central/master
-        git checkout my_shiny_feature
-
-
-Submit your changes to the central repository
----------------------------------------------
-
-Once your code is ready for others to review, you need to push your
-branch to your github fork first:
-
-.. code-block:: bash
-
-    git push -u origin my_shiny_feature
-
-Then, go to your fork's github page on the github website, select your
-feature branch and hit the "Pull Request" button in the top right
-corner.  This will signal the maintainers that you wish to submit your
-changes for inclusion in central/master.
-If you don't get any feedback, bug us on the theano-dev mailing list.
-
-
-Address reviewer comments
--------------------------
-
-Your pull request will be reviewed by members of the core development
-team. If your branch is not directly accepted, the reviewers will use
-GitHub's system to add "notes", either general (on the entire commit),
-or "line notes", relative to a particular line of code.
-In order to have the pull request accepted, you may have to answer
-the reviewer's questions, you can do that on GitHub.
-
-You may also have to edit your code to address their concerns. Some
-of the usual requests include fixing typos in comments, adding or
-correcting comments, adding unit tests in the test suite.  In order to
-do that, you should continue your edits in the same branch you used (in
-this example, "my_shiny_feature").  For instance, if you changed your
-working branch, you should first:
-
-.. code-block:: bash
-
-    git checkout my_shiny_feature
-
-Then, edit your code, and test it appropriately (see
-:ref:`quality_contributions` below), and push it again to your GitHub
-fork, like the first time (except the ``-u`` option is only needed the
-first time):
-
-.. code-block:: bash
-
-    git push origin my_shiny_feature
-
-The pull request to the central repository will then be automatically
-updated by GitHub. However, the reviewers will not be automatically
-notified of your revision, so it is advised to reply to the comments on
-GitHub, to let them know that you have submitted a fix.
+.. _nose: http://nose.readthedocs.org/en/latest/
 
 
 .. _quality_contributions:
 
-Tips for Quality Contributions
-==============================
+Requirements for Quality Contributions
+======================================
 
-Coding Style Auto Check
------------------------
+* All the code should be properly tested. 
 
-In Theano, we use the same coding style as the `Pylearn
-<http://deeplearning.net/software/pylearn/v2_planning/API_coding_style.html>`_
-project, except that we don't use the numpy docstring standard.
-The principal thing to know is that we follow the
-`PEP 8 <http://www.python.org/dev/peps/pep-0008/>`_ coding style.
+* The code should be compatible with Python 2.6 and above, as well as Python 
+  3.3 and above (using `six` if needed).
 
-We use git hooks provided in the project `pygithooks
-<https://github.com/lumberlabs/pygithooks>`_ to validate that commits
-respect pep8. This happens when each user commits, not when we
-push/merge to the Theano repository. Github doesn't allow us to have
-code executed when we push to the repository. So we ask all
-contributors to use those hooks.
+* All the code should respect the 
+  `PEP8 Code Style Guide <http://www.python.org/dev/peps/pep-0008>`_.
 
-For historic reason, we currently don't have all files respecting pep8.
-We decided to fix everything incrementally. So not all files respect it
-now. So we strongly suggest that you use the "increment" pygithooks
-config option to have a good workflow. See the pygithooks main page
-for how to set it up for Theano and how to enable this option.
+* The docstrings of all the classes and functions should respect the
+  `PEP257 <https://www.python.org/dev/peps/pep-0257/>`_ rules and follow the 
+  `Numpy docstring standard
+  <https://github.com/numpy/numpy/blob/master/doc/HOWTO_DOCUMENT.rst.txt>`_.
 
+Each point will be referred to more in detail in the following.
+
+Unit tests
+----------
+
+When you submit a pull request, your changes will automatically be
+tested via Travis-CI. This will post the results of the tests with a
+little icon next to your commit. A yellow circle means the tests are
+running.  A red X means the tests failed and a green circle means the
+tests passed.
+
+Just because the tests run automatically does not mean you shouldn't
+run them yourself to make sure everything is all right.  You can run
+only the portion you are modifying to go faster and have travis to
+make sure there are no global impacts.
+
+Also, if you are changing GPU code, travis doesn't test that, because
+there are no GPUs on the test nodes.
+
+To run the test suite with the default options, see 
+:ref:`test_theano`.
+
+Each night we execute all the unit tests automatically, with several
+sets of options. The result is sent by email to the `theano-buildbot`_
+mailing list.
+
+For more detail, see :ref:`metadocumentation_nightly_build`.
+
+To run all the tests with the same configuration as the buildbot, run
+this script:
+
+.. code-block:: bash
+
+   theano/misc/do_nightly_build
+
+This script accepts arguments that it forwards to nosetests. You can
+run only some tests or enable pdb by giving the equivalent nosetests
+parameters.
 
 Setting up your Editor for PEP8
 -------------------------------
@@ -243,49 +122,58 @@ Detection of warnings and errors is done by the `pep8`_ script
 errors). Syntax highlighting and general integration into Vim is done by
 the `Syntastic`_ plugin for Vim.
 
-To install flake8, simply run::
+To setup VIM:
 
-    pip install flake8
+#. Install flake8 (if not already installed) with::
 
-You can use ``easy_install`` instead of ``pip``, and ``pep8`` instead of
-``flake8`` if you prefer. The important thing is that the ``flake8`` or
-``pep8`` executable ends up in your ``$PATH``.
+    pip install "flake8<3"
 
-To install Syntastic, according to its documentation, the easiest way is
-to install `pathogen.vim`_ first.
+   .. warning:: Starting version 3.0.0, flake8 changed its dependancies and 
+      moved its Python API to a legacy module, breaking Theano's flake8 tests.
+      We recommend using a version prior to 3.  
 
-Here's a relevant extract of pathogen.vim's installation instructions:
+   .. note:: You can use ``easy_install`` instead of ``pip``, and ``pep8``
+      instead of ``flake8`` if you prefer. The important thing is that the
+      ``flake8`` or ``pep8`` executable ends up in your ``$PATH``.
 
-    Install to ``~/.vim/autoload/pathogen.vim``. Or copy and paste::
+#. Install vundle with::
 
-        mkdir -p ~/.vim/autoload ~/.vim/bundle; \
-        curl -so ~/.vim/autoload/pathogen.vim \
-            https://raw.github.com/tpope/vim-pathogen/HEAD/autoload/pathogen.vim
+    git clone https://github.com/VundleVim/Vundle.vim.git ~/.vim/bundle/Vundle.vim
 
-    If you don't have ``curl``, use ``wget -O`` instead.
+#. Edit ``~/.vimrc`` and add the lines:
 
-    By the way, if you're using Windows, change all occurrences of ``~/.vim``
-    to ``~\vimfiles``.
+    .. code-block:: python
 
-    Add this to your vimrc::
+        set nocompatible              " be iMproved, required
+        filetype off                  " required
+        " set the runtime path to include Vundle and initialize
+        set rtp+=~/.vim/bundle/Vundle.vim
+        call vundle#begin()
 
-        call pathogen#infect()
+        Plugin 'gmarik/Vundle.vim' " let Vundle manage Vundle (required!)
+        Plugin 'scrooloose/syntastic'
+        Plugin 'jimf/vim-pep8-text-width'
 
-    Now any plugins you wish to install can be extracted to a subdirectory
-    under ``~/.vim/bundle``, and they will be added to the ``'runtimepath'``.
+        call vundle#end()
 
-Now, we can install Syntastic. From the installation instructions:
+        " Syntastic settings
+        " You can run checkers explicitly by calling :SyntasticCheck <checker
+        let g:syntastic_python_checkers = ['flake8'] "use one of the following checkers:
+                                                     " flake8, pyflakes, pylint, python (native checker)
+        let g:syntastic_enable_highlighting = 1  "highlight errors and warnings
+        let g:syntastic_style_error_symbol = ">>" "error symbol
+        let g:syntastic_warning_symbol = ">>" "warning symbol
+        let g:syntastic_check_on_open = 1
+        let g:syntastic_auto_jump = 0  "do not jump to errors when detected
 
-    .. code-block:: bash
+#. Open a new vim and run ``:PluginInstall`` to automatically install the
+   plugins. When the installation is done, close the installation "window" 
+   with ``:q``. 
+   From now on Vim will check for PEP8 errors and highlight them whenever a 
+   file is saved.
 
-        cd ~/.vim/bundle
-        git clone https://github.com/scrooloose/syntastic.git
-
-    Then reload vim, run ``:Helptags``, and check out ``:help syntastic.txt``.
-
-From now on, when you save into a Python file, a syntax check will be
-run, and results will be displayed using Vim's `quickfix`_ mechanism
-(more precisely, a location-list). A few useful commands are:
+A few useful commands
+"""""""""""""""""""""
 
 * Open the list of errors: ``:lopen``, that can be abbreviated in ``:lop``
   (denoted ``:lop[en]``).
@@ -376,42 +264,239 @@ Then in your ``~/.emacs`` file, add this:
    '(flymake-errline ((((class color)) (:underline "red"))))
    '(flymake-warnline ((((class color)) (:underline "yellow")))))
 
-Unit tests
-----------
+Documentation and docstrings
+----------------------------
+* The documentation and the API documentation are generated using `Sphinx`_.
 
-When you submit a pull request, your changes will automatically be
-tested via Travis-CI. This will post the results of the tests with a
-little icon next to your commit. A yellow circle means the tests are
-running.  A red X means the tests failed and a green circle means the
-tests passed.
+* The documentation should be written in `reStructuredText`_ and the
+  docstrings of all the classes and functions should respect the
+  `PEP257 <https://www.python.org/dev/peps/pep-0257/>`_ rules and follow the 
+  `Numpy docstring standard
+  <https://github.com/numpy/numpy/blob/master/doc/HOWTO_DOCUMENT.rst.txt>`_.
 
-Just because the tests run automatically does not mean you shouldn't
-run them yourself to make sure everything is all right.  You can run
-only the portion you are modifying to go faster and have travis to
-make sure there are no global impacts.
+* Split the docstrings in sections, according to the `Allowed docstring
+  sections in Napoleon`_
 
-Also, if you are changing GPU code, travis doesn't test that, because
-there are no GPUs on the test nodes.
+* To cross-reference other objects (e.g. reference other classes or methods) in 
+  the docstrings, use the
+  `cross-referencing objects <http://www.sphinx-doc.org/en/stable/domains.html#cross-referencing-python-objects>`_ 
+  syntax. ``:py`` can be omitted, see e.g. this 
+  `stackoverflow answer <http://stackoverflow.com/a/7754189>`_.
 
-To run the test suite with the default options, you can follow the
-instructions of :ref:`testing_installation`.
+* See :ref:`metadocumentation`, for some information on how to generate the 
+  documentation.
 
-Each night we execute all the unit tests automatically, with several
-sets of options. The result is sent by email to the `theano-buildbot`_
-mailing list.
 
-For more detail, see :ref:`metadocumentation_nightly_build`.
+A Docstring Example
+~~~~~~~~~~~~~~~~~~~
+Here is an example on how to add a docstring to a class.
 
-To run all the tests with the same configuration as the buildbot, run
-this script:
+.. testcode:: python
+
+    import theano
+
+    class DoubleOp(theano.Op):
+        """
+        Double each element of a tensor.
+
+        Parameters
+        ----------
+        x : tensor
+            Input tensor
+
+        Returns
+        -------
+        tensor
+            a tensor of the same shape and dtype as the input with all
+            values doubled.
+
+        Notes
+        -----
+        this is a test note
+
+        See Also
+        --------
+        :class:`~theano.tensor.elemwise.Elemwise` : You can use this to replace
+        this example.  Just execute `x * 2` with x being a Theano variable.
+
+
+        .. versionadded:: 0.6
+        """
+
+This is how it will show up for files that we auto-list in the library
+documentation:
+
+.. automodule:: theano.misc.doubleop
+    :members:
+
+Installation and configuration
+==============================
+
+To obtain developer access: register with `GitHub
+<http://www.github.com/>`_ and create a fork of `Theano
+<http://www.github.com/Theano/Theano>`_.
+
+This will create your own Theano project on GitHub, referred later
+as "YourProfile/Theano", or "origin", from which you will be able to
+contribute to the original Theano/Theano, also called "central".
+
+
+Create a local copy
+-------------------
+
+Clone your fork locally with
 
 .. code-block:: bash
 
-   theano/misc/do_nightly_build
+    git clone git@github.com:YOUR_GITHUB_LOGIN/Theano.git
 
-This script accepts arguments that it forwards to nosetests. You can
-run only some tests or enable pdb by giving the equivalent nosetests
-parameters.
+For this URL to work, you must set your public ssh keys inside your
+`github account setting <https://github.com/settings/ssh>`_.
+
+From your local repository, your own fork on GitHub will be called "origin".
+
+Then, add a reference to the original ("central") Theano repository with
+
+.. code-block:: bash
+
+    git remote add central git://github.com/Theano/Theano.git
+
+You can choose another name than "central" to reference Theano/Theano
+(for instance, NumPy uses "upstream"), but this documentation will stick
+to "central."
+
+You can then test your installation of Theano by following the steps of
+:ref:`test_theano`.
+
+
+Using your local copy
+---------------------
+
+To update your library to the latest revision, you should have a local branch
+that tracks central/master. You can add one (named "trunk" here) with:
+
+.. code-block:: bash
+
+    git fetch central
+    git branch trunk central/master
+
+Once you have such a branch, in order to update it, do:
+
+.. code-block:: bash
+
+    git checkout trunk
+    git pull
+
+Keep in mind that this branch should be "read-only": if you want to
+patch Theano, you should work in another branch, like described in the
+:ref:`dev_workflow` section below.
+
+
+Configure Git
+-------------
+
+On your local machine, you need to configure git with basic informations:
+
+.. code-block:: bash
+
+   git config --global user.email you@yourdomain.example.com
+   git config --global user.name "Your Name Comes Here"
+
+
+You can also instruct git to use color in diff. For this, you need to
+add those lines in the file ~/.gitconfig
+
+.. code-block:: cfg
+
+    [color]
+       branch = auto
+       diff = auto
+       interactive = auto
+       status = auto
+
+
+.. _dev_workflow:
+
+Development Workflow
+====================
+
+Start a new local branch
+------------------------
+
+When working on a new feature in your own fork, start from an up-to-date copy
+of the `master` branch (the principal one) of the central repository
+(Theano/Theano on GitHub):
+
+.. code-block:: bash
+
+    git fetch central
+    git checkout -b my_shiny_feature central/master
+
+.. note::
+
+    This last line is a shortcut for:
+
+    .. code-block:: bash
+
+        git branch my_shiny_feature central/master
+        git checkout my_shiny_feature
+
+
+Submit your changes to the central repository
+---------------------------------------------
+
+Once your code is ready for others to review, you need to commit all the changes and then push your
+branch to your github fork first:
+
+.. code-block:: bash
+    
+    git commit -a -m "your message here"
+
+.. code-block:: bash
+
+    git push -u origin my_shiny_feature
+
+Then, go to your fork's github page on the github website, select your
+feature branch and hit the "Pull Request" button in the top right
+corner.  This will signal the maintainers that you wish to submit your
+changes for inclusion in central/master.
+If you don't get any feedback, bug us on the theano-dev mailing list.
+
+
+Address reviewer comments
+-------------------------
+
+Your pull request will be reviewed by members of the core development
+team. If your branch is not directly accepted, the reviewers will use
+GitHub's system to add "notes", either general (on the entire commit),
+or "line notes", relative to a particular line of code.
+In order to have the pull request accepted, you may have to answer
+the reviewer's questions, you can do that on GitHub.
+
+You may also have to edit your code to address their concerns. Some
+of the usual requests include fixing typos in comments, adding or
+correcting comments, adding unit tests in the test suite.  In order to
+do that, you should continue your edits in the same branch you used (in
+this example, "my_shiny_feature").  For instance, if you changed your
+working branch, you should first:
+
+.. code-block:: bash
+
+    git checkout my_shiny_feature
+
+Then, edit your code, and test it appropriately (see
+:ref:`quality_contributions` below), and push it again to your GitHub
+fork, like the first time (except the ``-u`` option is only needed the
+first time):
+
+.. code-block:: bash
+
+    git push origin my_shiny_feature
+
+The pull request to the central repository will then be automatically
+updated by GitHub. However, the reviewers will not be automatically
+notified of your revision, so it is advised to reply to the comments on
+GitHub, to let them know that you have submitted a fix.
 
 
 More Advanced Git Usage

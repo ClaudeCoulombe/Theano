@@ -3,7 +3,7 @@ Defines Linkers that deal with C implementations.
 
 """
 
-from __future__ import print_function
+from __future__ import absolute_import, print_function, division
 
 # Python imports
 from copy import copy
@@ -20,11 +20,6 @@ from theano.compat import izip
 from six import string_types, reraise
 from six.moves import StringIO, xrange
 
-# Note that we need to do this before importing cutils, since when there is
-# no theano cache dir initialized yet, importing cutils may require compilation
-# of cutils_ext.
-from theano.configparser import AddConfigVar, StrParam
-
 # gof imports
 from theano.gof import graph
 from theano.gof import link
@@ -32,10 +27,6 @@ from theano.gof import utils
 from theano.gof import cmodule
 from theano.gof.compilelock import get_lock, release_lock
 from theano.gof.callcache import CallCache
-
-AddConfigVar('gcc.cxxflags',
-             "Extra compiler flags for gcc",
-             StrParam(""))
 
 
 _logger = logging.getLogger("theano.gof.cc")
@@ -70,8 +61,6 @@ def get_persistent_module_cache():
 
 class CodeBlock:
     """
-    WRITEME
-
     Represents a computation unit composed of declare, behavior, and cleanup.
 
     The constructor initializes a L{CodeBlock} with templatized declare,
@@ -127,6 +116,12 @@ def failure_code_init(sub):
     """
     Code for failure in the struct init.
 
+    Parameters:
+    ----------
+    sub
+      Dictionary used to template the struct.
+      * failure_var -> must contain a variable name to use for
+      the failure code.
     """
     return '''{
         if (!PyErr_Occurred()) {
@@ -140,10 +135,10 @@ def failure_code_init(sub):
 
 def code_gen(blocks):
     """
-    WRITEME
-
     From a list of L{CodeBlock} instances, returns a string
-    that executes them all in sequence. eg for C{(decl1, task1,
+    that executes them all in sequence.
+
+    Eg for C{(decl1, task1,
     cleanup1)} and C{(decl2, task2, cleanup2)} the returned string
     will be of the form:
 
@@ -158,6 +153,12 @@ def code_gen(blocks):
          cleanup1
         }
 
+    Parameters:
+    ----------
+    blocks
+         List of CodeBlock instances such that
+         * declarations, behavior and cleanup are in the run()
+         method of the struct
     """
     decl = ""
     head = ""
@@ -171,8 +172,6 @@ def code_gen(blocks):
 
 def struct_gen(args, struct_builders, blocks, sub):
     """
-    WRITEME
-
     Generates a struct conforming to the following specifications:
 
     Parameters
@@ -462,7 +461,7 @@ def get_c_sync(r, name, sub):
 
 def apply_policy(policy, r, name, sub):
     """
-    WRITEME
+    Apply the list of policies to name.r,sub
 
     Parameters
     ----------
@@ -487,7 +486,7 @@ def apply_policy(policy, r, name, sub):
 
 def struct_variable_codeblocks(variable, policies, id, symbol_table, sub):
     """
-    WRITEME
+    Update "sub" dict and create two codeblocks with different failure modes
 
     Parameters
     ----------
@@ -510,7 +509,8 @@ def struct_variable_codeblocks(variable, policies, id, symbol_table, sub):
     """
 
     name = "V%i" % id
-    symbol_table[variable] = name
+    if variable not in symbol_table:
+        symbol_table[variable] = name
     sub = dict(sub)
 #    sub['name'] = name
     sub['id'] = id
@@ -533,8 +533,6 @@ def struct_variable_codeblocks(variable, policies, id, symbol_table, sub):
 
 class CLinker(link.Linker):
     """
-    WRITEME
-
     Creates C code for an fgraph, compiles it and returns callables
     through make_thunk and make_function that make use of the compiled
     code.
@@ -550,16 +548,17 @@ class CLinker(link.Linker):
         if schedule:
             self.schedule = schedule
 
-    def accept(self, fgraph, no_recycling=None):
+    def accept(self, fgraph, no_recycling=None, profile=None):
         """
-        WRITEME
+        Associate linker with fgraph
 
         """
         if no_recycling is None:
             no_recycling = []
         if self.fgraph is not None and self.fgraph is not fgraph:
             # A linker can be tied to only one FunctionGraph.
-            return type(self)(self.schedule).accept(fgraph, no_recycling)
+            return type(self)(self.schedule).accept(
+                fgraph, no_recycling, profile)
         self.fgraph = fgraph
         self.fetch_variables()
         self.no_recycling = no_recycling
@@ -567,8 +566,6 @@ class CLinker(link.Linker):
 
     def fetch_variables(self):
         """
-        WRITEME
-
         Fills the inputs, outputs, variables, orphans, temps and node_order
         fields.
 
@@ -608,14 +605,23 @@ class CLinker(link.Linker):
         self.orphans = list(r for r in self.variables
                             if isinstance(r, graph.Constant) and
                             r not in self.inputs)
+        # C type constants (theano.scalar.Scalar). They don't request an object
+        self.consts = []
+        # Move c type from orphans (theano.scalar.Scalar) to self.consts
+        for variable in self.orphans:
+            if isinstance(variable, graph.Constant):
+                try:
+                    variable.type.c_literal(variable.data)
+                    self.consts.append(variable)
+                    self.orphans.remove(variable)
+                except (utils.MethodNotDefined, NotImplementedError):
+                    pass
+
         self.temps = list(set(self.variables).difference(
             self.inputs).difference(self.outputs).difference(self.orphans))
-        self.consts = []
 
     def code_gen(self):
         """
-        WRITEME
-
         Generates code for a struct that does the computation of the fgraph and
         stores it in the struct_code field of the instance.
 
@@ -633,8 +639,6 @@ class CLinker(link.Linker):
             return self.struct_code
 
         no_recycling = self.no_recycling
-
-        self.consts = []
 
         c_support_code_apply = []
         c_init_code_apply = []
@@ -664,7 +668,11 @@ class CLinker(link.Linker):
             #           [what to declare in each run,
             #            what to do at the beginning of each run,
             #            what to do at the end of each run]]
-            if variable in self.inputs:
+            if variable in self.consts:
+                symbol[variable] = ("(" + variable.type.c_literal(
+                    variable.data) + ")")
+                continue
+            elif variable in self.inputs:
                 # We need to extract the new inputs at each run
                 # they do not need to be relayed to Python, so we don't sync.
                 # If the variable is both an input and an output, there is
@@ -675,15 +683,6 @@ class CLinker(link.Linker):
                 if not isinstance(variable, graph.Constant):
                     raise TypeError("All orphans to CLinker must be Constant"
                                     " instances.", variable)
-                if isinstance(variable, graph.Constant):
-                    try:
-                        symbol[variable] = ("(" + variable.type.c_literal(
-                            variable.data) + ")")
-                        self.consts.append(variable)
-                        self.orphans.remove(variable)
-                        continue
-                    except (utils.MethodNotDefined, NotImplementedError):
-                        pass
                 # orphans are not inputs so we'll just get fetch them
                 # when we initialize the struct and assume they stay
                 # the same
@@ -719,7 +718,7 @@ class CLinker(link.Linker):
                               [get_c_declare, get_c_extract_out,
                                   (get_c_sync, get_c_cleanup)]]
             else:
-                raise Exception("what the fuck")
+                raise Exception("this shouldn't be possible, please report this exception")
 
             builder, block = struct_variable_codeblocks(variable, policy,
                                                         id, symbol, sub)
@@ -894,14 +893,9 @@ class CLinker(link.Linker):
 
     def support_code(self):
         """
-        WRITEME
-
         Returns a list of support code strings that are needed by
-        one or more Variables or Ops. The support code from Variables is
-        added before the support code from Ops.
-
-        This might contain duplicates.
-
+        one or more Variables or Ops.
+        The support code from Variables is added before the support code from Ops.This might contain duplicates.
         """
         ret = []
         # generic support code
@@ -915,8 +909,6 @@ class CLinker(link.Linker):
 
     def compile_args(self):
         """
-        WRITEME
-
         Returns a list of compile args that are needed by one
         or more Variables or Ops.
 
@@ -975,8 +967,6 @@ class CLinker(link.Linker):
 
     def headers(self):
         """
-        WRITEME
-
         Returns a list of headers that are needed by one
         or more Types or Ops.
 
@@ -1036,8 +1026,6 @@ class CLinker(link.Linker):
 
     def header_dirs(self):
         """
-        WRITEME
-
         Returns a list of lib directories that are needed by one
         or more Types or Ops.
 
@@ -1059,8 +1047,6 @@ class CLinker(link.Linker):
 
     def libraries(self):
         """
-        WRITEME
-
         Returns a list of libraries that are needed by one
         or more Types or Ops.
 
@@ -1082,8 +1068,6 @@ class CLinker(link.Linker):
 
     def lib_dirs(self):
         """
-        WRITEME
-
         Returns a list of lib directories that are needed by one
         or more Types or Ops.
 
@@ -1105,7 +1089,7 @@ class CLinker(link.Linker):
 
     def __compile__(self, input_storage=None, output_storage=None,
                     storage_map=None, keep_lock=False):
-        """WRITEME
+        """
         Compiles this linker's fgraph.
 
         Parameters
@@ -1159,13 +1143,6 @@ class CLinker(link.Linker):
         for v in self.variables:
             if v in self.consts:
                 continue
-            if v in self.orphans and isinstance(v, graph.Constant):
-                try:
-                    # constant will be inlined, no need to get
-                    v.type.c_literal(v.data)
-                    continue
-                except (utils.MethodNotDefined, NotImplementedError):
-                    pass
             init_tasks.append((v, 'init', id))
             tasks.append((v, 'get', id + 1))
             id += 2
@@ -1177,7 +1154,7 @@ class CLinker(link.Linker):
 
     def make_thunk(self, input_storage=None, output_storage=None,
                    storage_map=None, keep_lock=False):
-        """WRITEME
+        """
         Compiles this linker's fgraph and returns a function to perform the
         computations, as well as lists of storage cells for both the inputs
         and outputs.
@@ -1188,12 +1165,16 @@ class CLinker(link.Linker):
             List of lists of length 1. In order to use
             the thunk returned by __compile__, the inputs must be put in
             that storage. If None, storage will be allocated.
-        @param output_storage: list of lists of length 1. The thunk returned
-            by __compile__ will put the variables of the computation in these
-            lists. If None, storage will be allocated.
-        @param storage_map: dict that map variables to storages. This is used
-            when you need to customize the storage of this thunk.
-
+        output_storage: list of lists of length 1.
+            The thunk returned by __compile__ will put the variables
+            of the computation in these lists. If None, storage will
+            be allocated.
+        storage_map: dict that map variables to storages.
+            This is used when you need to customize the storage of
+            this thunk
+        keep_lock:
+            If True, we won't release the lock on the compiledir
+            at the end of this function call.
         Returns: thunk, input_storage, output_storage
 
         The return values can be used as follows:
@@ -1237,10 +1218,6 @@ class CLinker(link.Linker):
         of theano.config (for all config options where "in_c_key" is True).
         It is followed by elements for every node in the topological ordering
         of `self.fgraph`.
-
-        If the Op of any Apply in the FunctionGraph does not have
-        c_code_cache_ok()==True, then this function raises a KeyError
-        exception.
 
         Input Signature
         ---------------
@@ -1581,7 +1558,12 @@ class CLinker(link.Linker):
 
     def cthunk_factory(self, error_storage, in_storage, out_storage,
                        storage_map=None, keep_lock=False):
-        """WRITEME
+        """
+        Returns a thunk that points to an instance of a C struct that
+        can carry on the computation of this linker's fgraph
+
+        Parameters:
+        ----------
         error_storage -> list of length 3
         in_storage -> list of lists of length 1, one per input
         out_storage -> list of lists of length 1, one per output
@@ -1718,8 +1700,6 @@ class _CThunk(object):
 
 class OpWiseCLinker(link.LocalLinker):
     """
-    WRITEME
-
     Uses CLinker on the individual Ops that comprise an fgraph and loops
     over them in Python. The variable is slower than a compiled version of
     the whole fgraph, but saves on compilation time because small changes
@@ -1758,7 +1738,10 @@ class OpWiseCLinker(link.LocalLinker):
         if schedule:
             self.schedule = schedule
 
-    def accept(self, fgraph, no_recycling=None):
+    def accept(self, fgraph, no_recycling=None, profile=None):
+        """
+        Associate linker with fgraph
+        """
         if no_recycling is None:
             no_recycling = []
         if self.fgraph is not None and self.fgraph is not fgraph:
@@ -1768,7 +1751,7 @@ class OpWiseCLinker(link.LocalLinker):
                 allow_gc=self.allow_gc,
                 nice_errors=self.nice_errors,
                 schedule=self.schedule,
-            ).accept(fgraph, no_recycling)
+            ).accept(fgraph, no_recycling, profile)
         self.fgraph = fgraph
         self.no_recycling = no_recycling
         return self
@@ -1859,11 +1842,14 @@ class OpWiseCLinker(link.LocalLinker):
 
 def _default_checker(x, y):
     """
-    WRITEME
-
     Default checker for DualLinker. This checks that the
     variables contain the same data using ==.
 
+
+    Parameters:
+    ----------
+    x,y
+        the variables to compare data
     """
     if x[0] != y[0]:
         raise Exception("Output mismatch.",
@@ -1872,8 +1858,6 @@ def _default_checker(x, y):
 
 class DualLinker(link.Linker):
     """
-    WRITEME
-
     Runs the fgraph in parallel using PerformLinker and CLinker.
 
     The thunk/function produced by DualLinker uses PerformLinker as the
@@ -1914,18 +1898,24 @@ class DualLinker(link.Linker):
         if schedule:
             self.schedule = schedule
 
-    def accept(self, fgraph, no_recycling=None):
+    def accept(self, fgraph, no_recycling=None, profile=None):
+        """
+        Update/tie self with fgraph
+        """
         if no_recycling is None:
             no_recycling = []
         if self.fgraph is not None and self.fgraph is not fgraph:
             return type(self)(self.checker, self.schedule).accept(
-                fgraph, no_recycling)
+                fgraph, no_recycling, profile)
         self.fgraph = fgraph
         self.no_recycling = no_recycling
         return self
 
     def make_thunk(self, **kwargs):
-
+        """
+        Compiles this linker's fgraph and returns a function to perform the
+        computations
+        """
         fgraph = self.fgraph
         no_recycling = self.no_recycling
 

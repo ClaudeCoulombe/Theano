@@ -2,6 +2,8 @@
 Define the `function` function.
 
 """
+from __future__ import absolute_import, print_function, division
+
 import logging
 
 import traceback as tb
@@ -26,7 +28,7 @@ def function_dump(filename, inputs, outputs=None, mode=None, updates=None,
                   on_unused_input=None,
                   extra_tag_to_remove=None):
     """
-    This is helpful to make a reproducable case for problem during Theano
+    This is helpful to make a reproducible case for problems during Theano
     compilation.
 
     Ex:
@@ -34,25 +36,26 @@ def function_dump(filename, inputs, outputs=None, mode=None, updates=None,
     replace `theano.function(...)` by
     `theano.function_dump('filename.pkl', ...)`.
 
-    If you see this, you where probably asked to use this function to
+    If you see this, you were probably asked to use this function to
     help debug a particular case during the compilation of a Theano
-    function. `function_dump` allows to easily reproduce your
-    compilation without asking any code. It pickle all the objects and
+    function. `function_dump` allows you to easily reproduce your
+    compilation without generating any code. It pickles all the objects and
     parameters needed to reproduce a call to `theano.function()`. This
-    include shared variables and there values. If you do not want
-    that, you can set to replace shared variables values by zeros by
+    includes shared variables and their values. If you do not want
+    that, you can choose to replace shared variables values with zeros by
     calling set_value(...) on them before calling `function_dump`.
 
     To load such a dump and do the compilation:
 
-    >>> import cPickle, theano
+    >>> from six.moves import cPickle
+    >>> import theano
     >>> d = cPickle.load(open("func_dump.bin", "rb"))  # doctest: +SKIP
     >>> f = theano.function(**d)  # doctest: +SKIP
 
     Note:
-      The parameter extra_tag_to_remove, is passed to the StripPickler used.
-      To pickle graph made by Blocks, it must be:
-          ['annotations', 'replacement_of', 'aggregation_scheme', 'rolesc']
+    The parameter `extra_tag_to_remove` is passed to the StripPickler used.
+    To pickle graph made by Blocks, it must be:
+    `['annotations', 'replacement_of', 'aggregation_scheme', 'roles']`
 
     """
     assert isinstance(filename, string_types)
@@ -75,11 +78,12 @@ def function(inputs, outputs=None, mode=None, updates=None, givens=None,
              rebuild_strict=True, allow_input_downcast=None, profile=None,
              on_unused_input=None):
     """
-    Return a callable object that will calculate `outputs` from `inputs`.
+    Return a :class:`callable object <theano.compile.function_module.Function>`
+    that will calculate `outputs` from `inputs`.
 
     Parameters
     ----------
-    inputs : list of either Variable or Param instances.
+    inputs : list of either Variable or In instances.
         Function parameters, these are not allowed to be shared variables.
     outputs : list or dict of Variables or Out instances.
         If it is a dict, the keys must be strings. Expressions to compute.
@@ -97,6 +101,10 @@ def function(inputs, outputs=None, mode=None, updates=None, givens=None,
         If True, do not perform any automatic update on Variables. If False
         (default), perform them all. Else, perform automatic updates on all
         Variables that are neither in "updates" nor in "no_default_updates".
+    accept_inplace : bool
+        True iff the graph can contain inplace operations prior to the
+        optimization phase (default is False). *Note* this parameter is unsupported,
+        and its use is not recommended.
     name : str
         An optional name for this function. The profile mode will print the time
         spent in this function.
@@ -112,13 +120,15 @@ def function(inputs, outputs=None, mode=None, updates=None, givens=None,
         Ops in the graph, an Exception will be raised.
     allow_input_downcast: bool or None
         True means that the values passed as inputs when calling the function
-        can be silently downcasted to fit the dtype of the corresponding
+        can be silently down-casted to fit the dtype of the corresponding
         Variable, which may lose precision. False means that it will only be
         cast to a more general, or precise, type. None (default) is almost like
-        False, but allows downcasting of Python float scalars to floatX.
+        False, but allows down-casting of Python float scalars to floatX.
     profile: None, True, or ProfileStats instance
         Accumulate profiling information into a given ProfileStats instance.
         If argument is `True` then a new ProfileStats instance will be used.
+        If argument is a string, a new ProfileStats instance will be created
+        with that string as its ``message`` attribute.
         This profiling object will be available via self.profile.
     on_unused_input
         What to do if a variable in the 'inputs' list is not used in the graph.
@@ -126,7 +136,7 @@ def function(inputs, outputs=None, mode=None, updates=None, givens=None,
 
     Returns
     -------
-    Function instance
+    :class:`theano.compile.function_module.Function` instance
         A callable object that will compute the outputs (given the inputs) and
         update the implicit function arguments according to the `updates`.
 
@@ -204,9 +214,9 @@ def function(inputs, outputs=None, mode=None, updates=None, givens=None,
          4. Linker
                The linker uses a Python loop to execute the code associated
                with all the Apply nodes in the graph in the correct order.
-               The CVM is a linker that replaces this Python loop with a C
-               loop to avoid continuously changing between Python and C.
-               The CVM is faster for 2 reasons:
+               The C Virtual Machine (CVM) is a linker that replaces this
+               Python loop with a C loop to avoid continuously changing
+               between Python and C. The CVM is faster for 2 reasons:
                  1) Its internal logic is in C, so no Python interpreter
                     overhead.
                  2) It makes native calls from the VM logic into thunks that
@@ -214,7 +224,6 @@ def function(inputs, outputs=None, mode=None, updates=None, givens=None,
                The VM is a linker that was developed to prototype the CVM. it
         was easier to develop the VM in Python then translate it to C instead
         of just writing it in C from scratch.
-               CVM stands for C Virtual Machine.
 
     """
     if isinstance(outputs, dict):
@@ -247,7 +256,7 @@ def function(inputs, outputs=None, mode=None, updates=None, givens=None,
             func_frame = stack[idx - 1]
             while "theano/gof" in func_frame[0] and idx > 0:
                 idx -= 1
-                # This can hapen if we call var.eval()
+                # This can happen if we call var.eval()
                 func_frame = stack[idx - 1]
             name = func_frame[0] + ':' + str(func_frame[1])
 

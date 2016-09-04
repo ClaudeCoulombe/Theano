@@ -4,6 +4,7 @@ This module provides utility functions for the Scan Op.
 See scan.py for details on scan.
 
 """
+from __future__ import absolute_import, print_function, division
 __docformat__ = 'restructedtext en'
 __authors__ = ("Razvan Pascanu "
                "Frederic Bastien "
@@ -150,13 +151,16 @@ def traverse(out, x, x_copy, d, visited=None):
     if out in visited:
         return d
     visited.add(out)
-    from theano.sandbox import cuda, gpuarray
+    from theano.sandbox import cuda
+    from theano.gpuarray.basic_ops import gpu_from_host, host_from_gpu
+    from theano.gpuarray import pygpu_activated
+    from theano.gpuarray.type import GpuArrayType
     if out == x:
         if isinstance(x.type, cuda.CudaNdarrayType):
             d[out] = cuda.gpu_from_host(x_copy)
         else:
-            assert isinstance(x.type, gpuarray.GpuArrayType)
-            d[out] = gpuarray.gpu_from_host(x_copy)
+            assert isinstance(x.type, GpuArrayType)
+            d[out] = gpu_from_host(x.type.context_name)(x_copy)
         return d
     elif out.owner is None:
         return d
@@ -165,8 +169,8 @@ def traverse(out, x, x_copy, d, visited=None):
           out.owner.inputs == [x]):
         d[out] = tensor.as_tensor_variable(x_copy)
         return d
-    elif (gpuarray.pygpu_activated and
-          out.owner.op == gpuarray.host_from_gpu and
+    elif (pygpu_activated and
+          out.owner.op == host_from_gpu and
           out.owner.inputs == [x]):
         d[out] = tensor.as_tensor_variable(x_copy)
         return d
@@ -620,7 +624,9 @@ def expand_empty(tensor_var, size):
     new_shape = [size + shapes[0]] + shapes[1:]
     empty = tensor.AllocEmpty(tensor_var.dtype)(*new_shape)
 
-    return tensor.set_subtensor(empty[:shapes[0]], tensor_var)
+    ret = tensor.set_subtensor(empty[:shapes[0]], tensor_var)
+    ret.tag.nan_guard_mode_check = False
+    return ret
 
 
 def equal_computations(xs, ys, in_xs=None, in_ys=None):

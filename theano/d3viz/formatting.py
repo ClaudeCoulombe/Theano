@@ -2,6 +2,7 @@
 
 Author: Christof Angermueller <cangermueller@gmail.com>
 """
+from __future__ import absolute_import, print_function, division
 
 import numpy as np
 import os
@@ -13,14 +14,7 @@ from theano import gof
 from theano.compile.profilemode import ProfileMode
 from theano.compile import Function
 from theano.compile import builders
-
-pydot_imported = False
-try:
-    import pydot as pd
-    if pd.find_graphviz():
-        pydot_imported = True
-except ImportError:
-    pass
+from theano.printing import pd, pydot_imported, pydot_imported_msg
 
 
 class PyDotFormatter(object):
@@ -44,7 +38,8 @@ class PyDotFormatter(object):
     def __init__(self, compact=True):
         """Construct PyDotFormatter object."""
         if not pydot_imported:
-            raise ImportError('Failed to import pydot. Please install pydot!')
+            raise ImportError('Failed to import pydot. ' +
+                              pydot_imported_msg)
 
         self.compact = compact
         self.node_colors = {'input': 'limegreen',

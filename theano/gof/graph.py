@@ -1,17 +1,14 @@
 """
 Node classes (`Apply`, `Variable`) and expression graph algorithms.
-
-To read about what theano graphs are from a user perspective, have a look at
-`graph.html <../doc/graph.html>`__.
-
 """
-from __future__ import print_function
+from __future__ import absolute_import, print_function, division
 
 from collections import deque
 from copy import copy
 from itertools import count
 
 import theano
+from theano import config
 from theano.gof import utils
 from six import string_types, integer_types, iteritems
 from theano.misc.ordered_set import OrderedSet
@@ -382,7 +379,7 @@ class Variable(Node):
         if owner is not None and not isinstance(owner, Apply):
             raise TypeError("owner must be an Apply instance", owner)
         self.owner = owner
-        if index is not None and not isinstance(index, int):
+        if index is not None and not isinstance(index, integer_types):
             raise TypeError("index must be an int", index)
         self.index = index
         if name is not None and not isinstance(name, string_types):
@@ -391,8 +388,7 @@ class Variable(Node):
         self.auto_name = 'auto_' + str(next(self.__count__))
 
     def __str__(self):
-        """
-        WRITEME
+        """Return a str representation of the Variable.
 
         """
         if self.name is not None:
@@ -406,8 +402,29 @@ class Variable(Node):
         else:
             return "<%s>" % str(self.type)
 
-    def __repr__(self):
-        return str(self)
+    def __repr_test_value__(self):
+        """Return a repr of the test value.
+
+        Return a printable representation of the test value. It can be
+        overridden by classes with non printable test_value to provide a
+        suitable representation of the test_value.
+        """
+        return repr(theano.gof.op.get_test_value(self))
+
+    def __repr__(self, firstPass=True):
+        """Return a repr of the Variable.
+
+        Return a printable name or description of the Variable. If
+        config.print_test_value is True it will also print the test_value if
+        any.
+        """
+        to_print = [str(self)]
+        if config.print_test_value and firstPass:
+            try:
+                to_print.append(self.__repr_test_value__())
+            except AttributeError:
+                pass
+        return '\n'.join(to_print)
 
     def clone(self):
         """
@@ -464,12 +481,13 @@ class Variable(Node):
         Examples
         --------
 
+        >>> import numpy
         >>> import theano.tensor as T
         >>> x = T.dscalar('x')
         >>> y = T.dscalar('y')
         >>> z = x + y
-        >>> z.eval({x : 16.3, y : 12.1})
-        array(28.4)
+        >>> numpy.allclose(z.eval({x : 16.3, y : 12.1}), 28.4)
+        True
 
         We passed :func:`eval` a dictionary mapping symbolic theano
         variables to the values to substitute for them, and it returned
@@ -546,7 +564,7 @@ class Constant(Variable):
         else:
             name = str(self.data)
             if len(name) > 20:
-                name = name[:10] + '...' + name[-10]
+                name = name[:10] + '...' + name[-10:]
             return 'Constant{%s}' % name
 
     def clone(self):
@@ -679,7 +697,15 @@ def inputs(variable_list, blockers=None):
 
 def variables_and_orphans(i, o):
     """
-    WRITEME
+    Extract list of variables between i and o nodes via
+    dfs traversal and chooses the orphans among them
+
+    Parameters
+    ----------
+    i : list
+         Input variables.
+    o : list
+         Output variables.
 
     """
     def expand(r):
@@ -694,21 +720,21 @@ def variables_and_orphans(i, o):
 
 def ops(i, o):
     """
-    WRITEME
+    Set of Ops contained within the subgraph between i and o
 
     Parameters
     ----------
     i : list
-        Input L{Variable}s.
+        Input variables.
     o : list
-        Output L{Variable}s.
+        Output variables.
 
     Returns
     -------
     object
         The set of ops that are contained within the subgraph that lies
-        between i and o, including the owners of the L{Variable}s in o and
-        intermediary ops between i and o, but not the owners of the L{Variable}s
+        between i and o, including the owners of the variables in o and
+        intermediary ops between i and o, but not the owners of the variables
         in i.
 
     """
@@ -723,14 +749,14 @@ def ops(i, o):
 
 def variables(i, o):
     """
-    WRITEME
+    Extracts list of variables within input and output nodes via dfs travesal
 
     Parameters
     ----------
     i : list
-        Input L{Variable}s.
+        Input variables.
     o : list
-        Output L{Variable}s.
+        Output variables.
 
     Returns
     -------
@@ -745,14 +771,15 @@ def variables(i, o):
 
 def orphans(i, o):
     """
-    WRITEME
+    Extracts list of variables within input and output nodes
+    via dfs travesal and returns the orphans among them
 
     Parameters
     ----------
     i : list
-        Input L{Variable}s.
+        Input Variables.
     o : list
-        Output L{Variable}s.
+        Output Variables.
 
     Returns
     -------
@@ -775,9 +802,9 @@ def clone(i, o, copy_inputs=True):
     Parameters
     ----------
     i : list
-        Input L{Variable}s.
+        Input Variables.
     o : list
-        Output L{Variable}s.
+        Output Variables.
     copy_inputs : bool
         If True, the inputs will be copied (defaults to True).
 
@@ -797,7 +824,7 @@ def clone_get_equiv(inputs, outputs, copy_inputs_and_orphans=True, memo=None):
     original graph to a new node (a clone) in a new graph.
 
     This function works by recursively cloning inputs... rebuilding a directed
-    graph from the bottom (inputs) up to eventually building new outputs.
+    graph from the inputs up to eventually building new outputs.
 
     Parameters
     ----------
@@ -851,7 +878,8 @@ def clone_get_equiv(inputs, outputs, copy_inputs_and_orphans=True, memo=None):
 
 
 def general_toposort(r_out, deps, debug_print=False,
-                     compute_deps_cache=None, deps_cache=None):
+                     compute_deps_cache=None, deps_cache=None,
+                     clients=None):
     """
     WRITEME
 
@@ -864,6 +892,9 @@ def general_toposort(r_out, deps, debug_print=False,
         deps, but that also cache its results in a dict passed as deps_cache.
     deps_cache : dict
         Must be used with compute_deps_cache.
+    clients : dict
+        If a dict is passed it will be filled with a mapping of node
+        -> clients for each node in the subgraph.
 
     Notes
     -----
@@ -902,8 +933,10 @@ def general_toposort(r_out, deps, debug_print=False,
 
     assert isinstance(r_out, (tuple, list, deque))
 
-    reachable, clients = stack_search(deque(r_out), compute_deps_cache,
-                                      'dfs', True)
+    reachable, _clients = stack_search(deque(r_out), compute_deps_cache,
+                                       'dfs', True)
+    if clients is not None:
+        clients.update(_clients)
     sources = deque([r for r in reachable if not deps_cache.get(r, None)])
 
     rset = set()
@@ -913,7 +946,7 @@ def general_toposort(r_out, deps, debug_print=False,
         if node not in rset:
             rlist.append(node)
             rset.add(node)
-            for client in clients.get(node, []):
+            for client in _clients.get(node, []):
                 deps_cache[client] = [a for a in deps_cache[client]
                                       if a is not node]
                 if not deps_cache[client]:
@@ -929,18 +962,21 @@ def general_toposort(r_out, deps, debug_print=False,
     return rlist
 
 
-def io_toposort(inputs, outputs, orderings=None):
+def io_toposort(inputs, outputs, orderings=None, clients=None):
     """
-    WRITEME
+    Perform topological sort from input and output nodes
 
     Parameters
     ----------
     inputs : list or tuple of Variable instances
     outputs : list or tuple of Apply instances
-    orderings: dict
+    orderings : dict
         Key: Apply instance. Value: list of Apply instance.
         It is important that the value be a container with a deterministic
         iteration order. No sets allowed!
+    clients : dict
+        If a dict is provided it will be filled with mappings of
+        node->clients for each node in the subgraph that is sorted
 
     """
     # the inputs are used only here in the function that decides what 'predecessors' to explore
@@ -991,7 +1027,7 @@ def io_toposort(inputs, outputs, orderings=None):
 
     topo = general_toposort(outputs, deps=compute_deps,
                             compute_deps_cache=compute_deps_cache,
-                            deps_cache=deps_cache)
+                            deps_cache=deps_cache, clients=clients)
     return [o for o in topo if isinstance(o, Apply)]
 
 
@@ -1187,8 +1223,8 @@ def op_as_string(i, op,
                  leaf_formatter=default_leaf_formatter,
                  node_formatter=default_node_formatter):
     """
-    WRITEME
-
+    Op to return a string representation of the subgraph
+    between i and o
     """
     strs = as_string(i, op.inputs, leaf_formatter, node_formatter)
     return node_formatter(op, strs)
@@ -1198,7 +1234,7 @@ def as_string(i, o,
               leaf_formatter=default_leaf_formatter,
               node_formatter=default_node_formatter):
     """
-    WRITEME
+    Returns a string representation of the subgraph between i and o
 
     Parameters
     ----------
@@ -1206,9 +1242,9 @@ def as_string(i, o,
         Input `Variable` s.
     o : list
         Output `Variable` s.
-    leaf_formatter : function
+    leaf_formatter : callable
         Takes a `Variable`  and returns a string to describe it.
-    node_formatter : function
+    node_formatter : callable
         Takes an `Op`  and the list of strings corresponding to its arguments
         and returns a string to describe it.
 

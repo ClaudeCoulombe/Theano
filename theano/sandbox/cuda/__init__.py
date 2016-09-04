@@ -1,4 +1,4 @@
-from __future__ import print_function
+from __future__ import absolute_import, print_function, division
 import atexit
 import errno
 import logging
@@ -6,6 +6,8 @@ import os
 import shutil
 import stat
 import sys
+import textwrap
+import warnings
 
 import theano
 from theano.compat import get_unbound_function
@@ -13,8 +15,7 @@ from theano.compile import optdb
 from theano.gof import EquilibriumDB, SequenceDB
 from theano.gof.cmodule import get_lib_extension
 from theano.gof.compilelock import get_lock, release_lock
-from theano.configparser import (
-    config, AddConfigVar, BoolParam, FloatParam, StrParam)
+from theano import config
 from . import nvcc_compiler
 
 from theano.tensor.basic import register_transfer
@@ -41,36 +42,6 @@ def register_opt(*tags, **kwargs):
 
 _logger_name = 'theano.sandbox.cuda'
 _logger = logging.getLogger(_logger_name)
-
-AddConfigVar('pycuda.init',
-        """If True, always initialize PyCUDA when Theano want to
-           initilize the GPU.  Currently, we must always initialize
-           PyCUDA before Theano do it.  Setting this flag to True,
-           ensure that, but always import PyCUDA.  It can be done
-           manually by importing theano.misc.pycuda_init before theano
-           initialize the GPU device.
-             """,
-        BoolParam(False),
-        in_c_key=False)
-
-AddConfigVar('cublas.lib',
-        """Name of the cuda blas library for the linker.""",
-        StrParam('cublas'))
-
-AddConfigVar('lib.cnmem',
-             """Do we enable CNMeM or not (a faster CUDA memory allocator).
-
-             The parameter represent the start size (in MB or % of
-             total GPU memory) of the memory pool.
-
-             0: not enabled.
-             0 < N <= 1: % of the total GPU memory (clipped to .985 for driver memory)
-             > 0: use that number of MB of memory.
-
-             """,
-             # We should not mix both allocator, so we can't override
-             FloatParam(0, lambda i: i >= 0, allow_override=False),
-             in_c_key=False)
 
 # is_nvcc_available called here to initialize global vars in
 # nvcc_compiler module
@@ -112,10 +83,10 @@ def set_cuda_disabled():
 cuda_path = os.path.abspath(os.path.split(__file__)[0])
 
 cuda_ndarray_loc = os.path.join(config.compiledir, 'cuda_ndarray')
-cuda_ndarray_so = os.path.join(cuda_ndarray_loc,
-                               'cuda_ndarray.' + get_lib_extension())
-libcuda_ndarray_so = os.path.join(cuda_ndarray_loc,
-                               'libcuda_ndarray.' + get_lib_extension())
+cuda_ndarray_so = os.path.join(
+        cuda_ndarray_loc, 'cuda_ndarray.' + get_lib_extension())
+libcuda_ndarray_so = os.path.join(
+        cuda_ndarray_loc, 'libcuda_ndarray.' + get_lib_extension())
 
 
 def try_import():
@@ -193,15 +164,15 @@ if compile_cuda_ndarray and cuda_available:
                         tmpdir = os.environ['TMPDIR']
                         if not os.path.exists(tmpdir):
                             os.makedirs(tmpdir)
-
                     compiler = nvcc_compiler.NVCC_compiler()
+                    preargs = ['-O3'] + compiler.compile_args()
                     compiler.compile_str(
                             'cuda_ndarray',
                             code,
                             location=cuda_ndarray_loc,
                             include_dirs=[cuda_path],
                             libs=[config.cublas.lib],
-                            preargs=['-O3'] + compiler.compile_args(),
+                            preargs=preargs,
                     )
                     from cuda_ndarray.cuda_ndarray import *
             except Exception as e:
@@ -276,12 +247,12 @@ class GpuOp(theano.gof.Op):
     """
 
     def make_thunk(self, node, storage_map, compute_map, no_recycling):
-        if theano.sandbox.cuda.use.device_number is None:
-            theano.sandbox.cuda.use("gpu",
-                                    force=True,
-                                    default_to_move_computation_to_gpu=False,
-                                    move_shared_float32_to_gpu=False,
-                                    enable_cuda=False)
+        if use.device_number is None:
+            use("gpu",
+                force=True,
+                default_to_move_computation_to_gpu=False,
+                move_shared_float32_to_gpu=False,
+                enable_cuda=False)
         return super(GpuOp, self).make_thunk(node, storage_map,
                                              compute_map, no_recycling)
 
@@ -297,18 +268,176 @@ from theano.sandbox.cuda.var import (CudaNdarrayVariable,
 from theano.sandbox.cuda.type import CudaNdarrayType
 
 
+def dnn_available():
+    if config.dnn.enabled == "False":
+        dnn_available.avail = False
+        dnn_available.msg = "Disabled by dnn.enabled flag"
+    if dnn_available.avail is None and not cuda_available:
+        dnn_available.msg = "CUDA not available"
+        dnn_available.avail = False
+    elif dnn_available.avail is None:
+        dev = active_device_number()
+        if device_properties(dev)['major'] < 3:
+            dnn_available.msg = "Device not supported"
+            dnn_available.avail = False
+        else:
+            preambule = textwrap.dedent(
+                """
+                #include <stdio.h>
+                #include <cuda.h>
+                #include <cudnn.h>
+                #include <cudnn_helper.h>
+                """)
+
+            body = textwrap.dedent(
+                """
+                cudnnHandle_t _handle = NULL;
+                cudnnStatus_t err;
+                if ((err = cudnnCreate(&_handle)) != CUDNN_STATUS_SUCCESS) {
+                  fprintf(stderr, "could not create cuDNN handle: %s",
+                          cudnnGetErrorString(err));
+                  return 1;
+                }
+                """)
+            # to support path that includes spaces, we need to wrap it with double quotes on Windows
+            path_wrapper = "\"" if os.name =='nt' else ""
+            params = ["-l", "cudnn"]
+            params.extend(['-I%s%s%s' % (path_wrapper, os.path.dirname(__file__), path_wrapper)])
+            if config.dnn.include_path:
+                params.extend(['-I%s%s%s' % (path_wrapper, config.dnn.include_path, path_wrapper)])
+            if config.dnn.library_path:
+                params.extend(['-L%s%s%s' % (path_wrapper, config.dnn.library_path, path_wrapper)])
+            if config.nvcc.compiler_bindir:
+                params.extend(['--compiler-bindir',
+                               '%s%s%s' % (path_wrapper, config.nvcc.compiler_bindir, path_wrapper)])
+            params.extend([flag for flag in config.nvcc.flags.split(' ') if flag])
+
+            # Do not run here the test program. It would run on the
+            # default gpu, not the one selected by the user. If mixed
+            # GPU are installed or if the GPUs are configured in
+            # exclusive mode, this cause bad detection.
+            comp, out, err = nvcc_compiler.NVCC_compiler.try_flags(
+                flag_list=params, preambule=preambule, body=body,
+                try_run=False, output=True)
+
+            dnn_available.avail = comp
+            if not dnn_available.avail:
+                dnn_available.msg = (
+                    "Can not compile with cuDNN. We got this error:\n" +
+                    str(err))
+            else:
+                # If we can compile, check that we can import and run.
+                v = dnn_version()
+                if isinstance(v, tuple) and v[0] != v[1]:
+                    dnn_available.avail = False
+                    dnn_available.msg = ("Mixed dnn version. The header is"
+                                         " from one version, but we link with"
+                                         " a different version %s" % str(v))
+                    raise RuntimeError(dnn_available.msg)
+                if v == -1 or v[0] < 4007:
+                    # 4007 is the final release of cudnn v4
+                    dnn_available.avail = False
+                    dnn_available.msg = "Version is too old. Update to v5, was %d." % v[0]
+                    raise RuntimeError(dnn_available.msg)
+                else:
+                    dnn_available.avail = comp
+    if config.dnn.enabled == "True":
+        if not dnn_available.avail:
+            raise RuntimeError(
+                "You enabled cuDNN, but we aren't able to use it: %s" %
+                dnn_available.msg)
+    return dnn_available.avail
+
+
+dnn_available.avail = None
+dnn_available.msg = None
+
+
+class DnnVersion(GpuOp):
+    def c_compiler(self):
+        return nvcc_compiler.NVCC_compiler
+
+    def c_headers(self):
+        return ['cudnn.h']
+
+    def c_header_dirs(self):
+        return [config.dnn.include_path]
+
+    def c_libraries(self):
+        return ['cudnn']
+
+    def c_lib_dirs(self):
+        return [config.dnn.library_path]
+
+    def c_compile_args(self):
+        return ['-Wl,-rpath,' + config.dnn.library_path]
+
+    def c_support_code(self):
+        return textwrap.dedent(
+            """
+            #if PY_MAJOR_VERSION >= 3
+            #define PyInt_FromLong PyLong_FromLong
+            #endif
+            """)
+
+    def make_node(self):
+        return theano.gof.Apply(self, [], [theano.gof.Generic()()])
+
+    def c_code(self, node, name, inputs, outputs, sub):
+        o = outputs[0]
+        return textwrap.dedent(
+            """
+            #if defined(CUDNN_VERSION)
+            %(o)s = PyTuple_Pack(2, PyInt_FromLong(CUDNN_VERSION), PyInt_FromLong(cudnnGetVersion()));
+            #else
+            %(o)s = PyInt_FromLong(-1);
+            #endif
+            """) % locals()
+
+    def do_constant_folding(self, node):
+        # Needed as we do not want to cache this information.
+        return False
+
+    def c_code_cache_version(self):
+        # Not needed, but make it clear that we do not want to cache this.
+        return None
+
+
+def dnn_version():
+    """Return the current cuDNN version we compile with.
+
+    This returns a tuple with the header version and the library
+    version we link with. For older cudnn version without version
+    information, we return -1.
+
+    """
+    if not dnn_available():
+        raise Exception(
+            "We can't determine the cudnn version as it is not available",
+            dnn_available.msg)
+
+    if dnn_version.v is None:
+        f = theano.function([], DnnVersion()(),
+                            theano.Mode(optimizer=None),
+                            profile=False)
+        dnn_version.v = f()
+    return dnn_version.v
+dnn_version.v = None
+
+
 if cuda_available:
     # check if their is an old cuda_ndarray that was loading instead of the one
     # we compiled!
     import cuda_ndarray.cuda_ndarray
     if cuda_ndarray_so != cuda_ndarray.cuda_ndarray.__file__:
         _logger.warning("cuda_ndarray was loaded from %s, but Theano expected "
-                "to load it from %s. This is not expected as theano should "
-                "compile it automatically for you. Do you have a directory "
-                "called cuda_ndarray in your LD_LIBRARY_PATH environment "
-                "variable? If so, please remove it as it is outdated.",
-                cuda_ndarray.cuda_ndarray.__file__,
-                cuda_ndarray_so)
+                        "to load it from %s. This is not expected as theano "
+                        "should compile it automatically for you. Do you have "
+                        "a directory called cuda_ndarray in your "
+                        "LD_LIBRARY_PATH environment variable? If so, please "
+                        "remove it as it is outdated.",
+                        cuda_ndarray.cuda_ndarray.__file__,
+                        cuda_ndarray_so)
 
     shared_constructor = float32_shared_constructor
 
@@ -318,13 +447,13 @@ if cuda_available:
             GpuDimShuffle, GpuCAReduce, GpuReshape, GpuContiguous,
             GpuSubtensor, GpuIncSubtensor,
             GpuAdvancedSubtensor1, GpuAdvancedIncSubtensor1,
-            GpuFlatten, GpuShape, GpuAlloc, GpuAllocEmpty, GpuSplit,
+            gpu_flatten, GpuFlatten, GpuShape, GpuAlloc, GpuAllocEmpty, GpuSplit,
             GpuJoin, fscalar, fvector, fmatrix, frow, fcol,
             ftensor3, ftensor4,
             scalar, vector, matrix, row, col,
             tensor3, tensor4)
-    from .basic_ops import (host_from_gpu, gpu_from_host,
-            as_cuda_array, as_cuda_ndarray_variable)
+    from .basic_ops import (host_from_gpu, gpu_from_host, as_cuda_array,
+                            as_cuda_ndarray_variable)
     import cuda_ndarray
     from . import opt, dnn
     from .rng_curand import CURAND_RandomStreams
@@ -374,10 +503,11 @@ def use(device,
             raise EnvironmentError("You forced the use of gpu device %s, "
                                    "but CUDA initialization failed "
                                    "with error:\n%s" % (
-                device, cuda_initialization_error_message))
+                                       device,
+                                       cuda_initialization_error_message))
     elif not nvcc_compiler.is_nvcc_available():
-        _logger.error('nvcc compiler not found on $PATH.'
-              ' Check your nvcc installation and try again.')
+        _logger.error("nvcc compiler not found on $PATH. "
+                      "Check your nvcc installation and try again.")
         return
     elif not cuda_available:
         error_addendum = ""
@@ -386,10 +516,10 @@ def use(device,
                 error_addendum = (" (error: %s)" %
                                   cuda_initialization_error_message)
         except NameError:
-# cuda_initialization_error_message is not available b/c compilation failed
+            # cuda_initialization_error_message is not available b/c compilation failed
             pass
-        _logger.warning('CUDA is installed, but device %s is not available %s',
-                device, error_addendum)
+        _logger.warning("CUDA is installed, but device %s is not available %s",
+                        device, error_addendum)
         return
 
     if device == 'gpu':
@@ -449,9 +579,37 @@ def use(device,
                                  " this property")
 
             if config.print_active_device:
-                cnmem_enabled = "enabled" if config.lib.cnmem else "disabled"
-                print("Using gpu device %d: %s (CNMeM is %s)" % (
-                        active_device_number(), active_device_name(), cnmem_enabled), file=sys.stderr)
+                if config.lib.cnmem:
+                    if config.lib.cnmem > 1:
+                        cnmem_enabled = "enabled with initial size: %d MB" % config.lib.cnmem
+                    else:
+                        cnmem = min(config.lib.cnmem, 0.95) * 100
+                        cnmem_enabled = "enabled with initial size: %.1f%% of memory" % cnmem
+                else:
+                    cnmem_enabled = "disabled"
+                cudnn_version = "not available"
+                warn = None
+                try:
+                    if dnn_available():
+                        (hdr_v, runtime_v) = dnn_version()
+                        cudnn_version = runtime_v
+                        # 5200 should not print warning with cudnn 5 final.
+                        if cudnn_version >= 5200:
+                            warn = ("Your cuDNN version is more recent than the one"
+                                    " Theano officially supports."
+                                    " If you see any problems, try updating Theano or"
+                                    " downgrading cuDNN to version 5.1.")
+                except Exception:
+                    cudnn_version = dnn_available.msg
+                print("Using gpu device %d: %s (CNMeM is %s, cuDNN %s)" % (
+                    active_device_number(),
+                    active_device_name(),
+                    cnmem_enabled,
+                    cudnn_version,),
+                      file=sys.stderr)
+                if warn:
+                    warnings.warn(warn)
+
             if device_properties(use.device_number)['regsPerBlock'] < 16384:
                 # We will try to use too much register per bloc at many places
                 # when there is only 8k register per multi-processor.
@@ -474,8 +632,8 @@ def use(device,
 
     elif use.device_number != device and device != 'gpu':
         _logger.warning(("Ignoring call to use(%s), GPU number %i "
-            "is already in use."),
-            str(device), use.device_number)
+                         "is already in use."),
+                        str(device), use.device_number)
 
     if move_shared_float32_to_gpu:
         handle_shared_float32(True)
@@ -490,6 +648,8 @@ def use(device,
                        'fast_compile',
                        'fast_run')
         optdb.add_tags('gpu_after_fusion',
+                       'fast_run')
+        optdb.add_tags('gpu_scanOp_make_inplace',
                        'fast_run')
 
     if force:
@@ -551,11 +711,10 @@ elif config.init_gpu_device.startswith('gpu'):
         "We can use the Theano flag init_gpu_device"
         " only when the Theano flag device=='cpu'")
     _logger.warning(("GPU device %s will be initialized, and used if a GPU is "
-          "needed. "
-          "However, no computation, nor shared variables, will be implicitly "
-          "moved to that device. If you want that behavior, use the 'device' "
-          "flag instead."),
-          config.init_gpu_device)
+                     "needed. However, no computation, nor shared variables, "
+                     "will be implicitly moved to that device. If you want "
+                     "that behavior, use the 'device' flag instead."),
+                    config.init_gpu_device)
     use(device=config.init_gpu_device,
         force=config.force_device,
         default_to_move_computation_to_gpu=False,

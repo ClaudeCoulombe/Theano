@@ -1,4 +1,4 @@
-from __future__ import print_function
+from __future__ import absolute_import, print_function, division
 from functools import partial
 import sys
 import time
@@ -114,10 +114,20 @@ class Feature(object):
 class Bookkeeper(Feature):
 
     def on_attach(self, fgraph):
+        """
+        Called by FunctionGraph.attach_feature, the method that attaches
+        the feature to the FunctionGraph. Since this is called after the
+        FunctionGraph is initially populated, this is where you should
+        run checks on the initial contents of the FunctionGraph.
+        """
         for node in graph.io_toposort(fgraph.inputs, fgraph.outputs):
             self.on_import(fgraph, node, "on_attach")
 
     def on_detach(self, fgraph):
+        """
+        Should remove any dynamically added functionality
+        that it installed into the function_graph
+        """
         for node in graph.io_toposort(fgraph.inputs, fgraph.outputs):
             self.on_prune(fgraph, node, 'Bookkeeper.detach')
 
@@ -178,6 +188,10 @@ class History(Feature):
         fgraph.revert = partial(self.revert, fgraph)
 
     def on_detach(self, fgraph):
+        """
+        Should remove any dynamically added functionality
+        that it installed into the function_graph
+        """
         del fgraph.checkpoint
         del fgraph.revert
         del self.history[fgraph]
@@ -223,10 +237,19 @@ class Validator(Feature):
         fgraph.consistent = partial(self.consistent_, fgraph)
 
     def on_detach(self, fgraph):
+        """
+        Should remove any dynamically added functionality
+        that it installed into the function_graph
+        """
         del fgraph.validate
         del fgraph.consistent
 
     def validate_(self, fgraph):
+        """
+        If the caller is replace_all_validate, just raise the
+        exception. replace_all_validate will print out the
+        verbose output. Or it has to be done here before raise.
+        """
         t0 = time.time()
         try:
             ret = fgraph.execute_callbacks('validate')
@@ -273,6 +296,8 @@ class ReplaceValidate(History, Validator):
             if hasattr(fgraph, attr):
                 raise AlreadyThere("ReplaceValidate feature is already present"
                                    " or in conflict with another plugin.")
+        self._nodes_removed = set()
+        self.fail_validate = False
         History.on_attach(self, fgraph)
         Validator.on_attach(self, fgraph)
         self.unpickle(fgraph)
@@ -287,8 +312,13 @@ class ReplaceValidate(History, Validator):
             self.replace_all_validate_remove, fgraph)
 
     def on_detach(self, fgraph):
+        """
+        Should remove any dynamically added functionality
+        that it installed into the function_graph
+        """
         History.on_detach(self, fgraph)
         Validator.on_detach(self, fgraph)
+        del self._nodes_removed
         del fgraph.replace_validate
         del fgraph.replace_all_validate
         del fgraph.replace_all_validate_remove
@@ -301,6 +331,9 @@ class ReplaceValidate(History, Validator):
         chk = fgraph.checkpoint()
         if verbose is None:
             verbose = config.optimizer_verbose
+        if config.scan.debug:
+            scans = [n for n in fgraph.apply_nodes if isinstance(n.op, theano.scan_module.scan_op.Scan)]
+
         for r, new_r in replacements:
             try:
                 fgraph.replace(r, new_r, reason=reason, verbose=False)
@@ -334,6 +367,14 @@ class ReplaceValidate(History, Validator):
             if verbose:
                 print("validate failed on node %s.\n Reason: %s, %s" % (r, reason, e))
             raise
+        if config.scan.debug:
+            scans2 = [n for n in fgraph.apply_nodes if isinstance(n.op, theano.scan_module.scan_op.Scan)]
+            nb = len(scans)
+            nb2 = len(scans2)
+            if nb2 > nb:
+                print("Extra scan introduced", nb, nb2, getattr(reason, 'name', reason), r, new_r)
+            elif nb2 < nb:
+                print("Scan removed", nb, nb2, getattr(reason, 'name', reason), r, new_r)
         if verbose:
             print(reason, r, new_r)
         # The return is needed by replace_all_validate_remove
@@ -347,6 +388,7 @@ class ReplaceValidate(History, Validator):
 
         """
         chk = fgraph.replace_all_validate(replacements, reason)
+        self._nodes_removed.update(remove)
         for rm in remove:
             if rm in fgraph.apply_nodes or rm in fgraph.variables:
                 fgraph.revert(chk)
@@ -369,6 +411,15 @@ class ReplaceValidate(History, Validator):
             del d["history"]
         return d
 
+    def on_import(self, fgraph, node, reason):
+        if node in self._nodes_removed:
+            self.fail_validate = True
+
+    def validate(self, fgraph):
+        if self.fail_validate:
+            self.fail_validate = False
+            raise theano.gof.InconsistencyError("Trying to reintroduce a removed node")
+
 
 class NodeFinder(Bookkeeper):
 
@@ -388,6 +439,10 @@ class NodeFinder(Bookkeeper):
         Bookkeeper.on_attach(self, fgraph)
 
     def on_detach(self, fgraph):
+        """
+        Should remove any dynamically added functionality
+        that it installed into the function_graph
+        """
         if self.fgraph is not fgraph:
             raise Exception("This NodeFinder instance was not attached to the"
                             " provided fgraph.")
@@ -437,6 +492,10 @@ class PrintListener(Feature):
             print("-- attaching to: ", fgraph)
 
     def on_detach(self, fgraph):
+        """
+        Should remove any dynamically added functionality
+        that it installed into the function_graph
+        """
         if self.active:
             print("-- detaching from: ", fgraph)
 
@@ -455,10 +514,28 @@ class PrintListener(Feature):
 
 
 class PreserveNames(Feature):
+    """
+    This preserve some variables names during optimization.
+
+    Deprecated. We need to keep it to allow unpickling.
+    """
 
     def on_change_input(self, fgraph, node, i, r, new_r, reason=None):
         if r.name is not None and new_r.name is None:
             new_r.name = r.name
+
+
+class PreserveVariableAttributes(Feature):
+    """
+    This preserve some variables attributes and tag during optimization.
+    """
+
+    def on_change_input(self, fgraph, node, i, r, new_r, reason=None):
+        if r.name is not None and new_r.name is None:
+            new_r.name = r.name
+        if getattr(r.tag, 'nan_guard_mode_check', False) and getattr(
+                new_r.tag, 'nan_guard_mode_check', False) is False:
+            new_r.tag.nan_guard_mode_check = r.tag.nan_guard_mode_check
 
 
 class NoOutputFromInplace(Feature):

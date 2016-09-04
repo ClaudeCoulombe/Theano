@@ -2,6 +2,8 @@
 Provides Ops for FFT and DCT.
 
 """
+
+from __future__ import absolute_import, print_function, division
 import numpy
 import numpy.fft
 
@@ -10,9 +12,17 @@ from six.moves import xrange
 from theano import tensor
 from theano.gof import Op, Apply, generic
 
+# This module will soon be deprecated.
+import warnings
+
+message = ("The module theano.sandbox.fourier will soon be deprecated."
+           " Please use theano.tensor.fft, which supports gradients and "
+           "automatic optimization transfers to the GPU ops.")
+warnings.warn(message)
+
 
 class GradTodo(Op):
-
+    # TODO : need description for class
     __props__ = ()
 
     def make_node(self, x):
@@ -24,6 +34,7 @@ grad_todo = GradTodo()
 
 
 class FFT(Op):
+    # TODO : need description for parameters
     """
     Fast Fourier Transform.
 
@@ -44,7 +55,8 @@ class FFT(Op):
     # don't return the plan object in the 'buf' output
 
     half = False
-    """Only return the first half (positive-valued) of the frequency components."""
+    """Only return the first half (positive-valued) of the frequency
+    components."""
     __props__ = ("half", "inverse")
 
     def __init__(self, half=False, inverse=False):
@@ -82,11 +94,13 @@ class FFT(Op):
             M, N = fft.shape
             if axis == 0:
                 if (M % 2):
-                    raise ValueError('halfFFT on odd-length vectors is undefined')
+                    raise ValueError(
+                        'halfFFT on odd-length vectors is undefined')
                 spectrogram[0] = fft[0:M / 2, :]
             elif axis == 1:
                 if (N % 2):
-                    raise ValueError('halfFFT on odd-length vectors is undefined')
+                    raise ValueError(
+                        'halfFFT on odd-length vectors is undefined')
                 spectrogram[0] = fft[:, 0:N / 2]
             else:
                 raise NotImplementedError()
@@ -105,6 +119,7 @@ half_ifft = FFT(half=True, inverse=True)
 
 
 def dct_matrix(rows, cols, unitary=True):
+    # TODO : need description for parameters
     """
     Return a (rows x cols) matrix implementing a discrete cosine transform.
 
@@ -115,7 +130,8 @@ def dct_matrix(rows, cols, unitary=True):
     col_range = numpy.arange(cols)
     scale = numpy.sqrt(2.0 / cols)
     for i in xrange(rows):
-        rval[i] = numpy.cos(i * (col_range * 2 + 1) / (2.0 * cols) * numpy.pi) * scale
+        rval[i] = numpy.cos(
+            i * (col_range * 2 + 1) / (2.0 * cols) * numpy.pi) * scale
 
     if unitary:
         rval[0] *= numpy.sqrt(0.5)
