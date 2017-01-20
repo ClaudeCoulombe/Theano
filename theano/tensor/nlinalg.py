@@ -191,8 +191,8 @@ class ExtractDiag(Op):
 
         if x.type.ndim != 2:
             raise TypeError('ExtractDiag only works on matrices', _x)
-        return Apply(self, [x], [x.type.__class__(broadcastable=(False,),
-                                                  dtype=x.type.dtype)()])
+        y = x.type.clone(broadcastable=(False,))()
+        return Apply(self, [x], [y])
 
     def perform(self, node, ins, outs):
         """ For some reason numpy.diag(x) is really slow, so we
@@ -456,10 +456,8 @@ class EighGrad(Op):
         # implements the necessary logic.
         out = self.tri0(g) + self.tri1(g).T
 
-        # The call to self.tri0 in perform upcast from float32 to
-        # float64 or from int* to int64 in numpy 1.6.1 but not in
-        # 1.6.2. We do not want version dependent dtype in Theano.
-        # We think it should be the same as the output.
+        # Make sure we return the right dtype even if NumPy performed
+        # upcasting in self.tri0.
         outputs[0][0] = numpy.asarray(out, dtype=node.outputs[0].dtype)
 
     def infer_shape(self, node, shapes):
@@ -533,7 +531,7 @@ class QRIncomplete(Op):
                            self.mode)
 
 
-def qr(a, mode="full"):
+def qr(a, mode="reduced"):
     """
     Computes the QR decomposition of a matrix.
     Factor the matrix a as qr, where q
@@ -544,7 +542,7 @@ def qr(a, mode="full"):
     a : array_like, shape (M, N)
         Matrix to be factored.
 
-    mode : {'reduced', 'complete', 'r', 'raw', 'full', 'economic'}, optional
+    mode : {'reduced', 'complete', 'r', 'raw'}, optional
         If K = min(M, N), then
 
         'reduced'
@@ -559,27 +557,10 @@ def qr(a, mode="full"):
         'raw'
           returns h, tau with dimensions (N, M), (K,)
 
-        'full'
-          alias of 'reduced', deprecated (default)
+        Note that array h returned in 'raw' mode is
+        transposed for calling Fortran.
 
-        'economic'
-          returns h from 'raw', deprecated.
-
-        The options 'reduced', 'complete', and 'raw' are new in numpy
-        1.8, see the notes for more information. The default is
-        'reduced' and to maintain backward compatibility with earlier
-        versions of numpy both it and the old default 'full' can be
-        omitted. Note that array h returned in 'raw' mode is
-        transposed for calling Fortran. The 'economic' mode is
-        deprecated. The modes 'full' and 'economic' may be passed
-        using only the first letter for backwards compatibility, but
-        all others must be spelled out.
-
-        Default mode is 'full' which is also default for numpy 1.6.1.
-
-        :note: Default mode was left to full as full and reduced are
-           both doing the same thing in the new numpy version but only
-           full works on the old previous numpy version.
+        Default mode is 'reduced'
 
     Returns
     -------

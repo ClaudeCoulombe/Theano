@@ -287,6 +287,30 @@ class T_LogSoftmax(utt.InferShapeTester):
         f = theano.function([], myfunc(sa))
         self.assertTrue(check_stack_trace(f, ops_to_check='all'))
 
+    def test_logsoftmax_grad_true_div_elemwise(self):
+        # Checks that the gradient of an expression similar to a log(softmax)
+        # but with a different elemwise operation than true_div is not
+        # optimized.
+
+        x = T.matrix('x')
+        y = T.log(T.nnet.softmax(x))
+        g = T.grad(y.sum(), x)
+
+        softmax_grad_node = g.owner
+        assert softmax_grad_node.op == softmax_grad
+        true_div_node = softmax_grad_node.inputs[0].owner
+        assert true_div_node.op == tensor.true_div
+
+        # We replace the elemwise true_div op by an elemwise add.
+        new_g = softmax_grad(tensor.add(*true_div_node.inputs),
+                             softmax_grad_node.inputs[1])
+
+        fgraph = gof.FunctionGraph([x], [new_g])
+        theano.compile.mode.optdb.query(
+            theano.compile.mode.OPT_FAST_RUN).optimize(fgraph)
+
+        assert softmax_grad in [n.op for n in fgraph.toposort()]
+
 
 class T_SoftmaxGrad(utt.InferShapeTester):
 
@@ -1314,10 +1338,10 @@ def test_argmax_pushdown():
         # for node in fgraph.toposort():
         # print node.op
         assert len(fgraph.toposort()) == 2  # an output_guard is second
-        assert fgraph.toposort()[0].op == tensor.basic._max_and_argmax
+        assert fgraph.toposort()[0].op == tensor.basic._argmax
         assert str(fgraph.toposort()[1].op) == 'OutputGuard'
         assert check_stack_trace(
-            fgraph, ops_to_check=tensor.basic._max_and_argmax)
+            fgraph, ops_to_check=tensor.basic._argmax)
         x = tensor.matrix()
         # test that the max_and_argmax is not pushed down if the max is used
         out = tensor.max_and_argmax(
@@ -1362,7 +1386,7 @@ def test_argmax_pushdown_bias():
     # print 'AFTER'
     # for node in fgraph.toposort():
     #    print node.op
-    types_to_check = (tensor.DimShuffle, tensor.Elemwise, tensor.MaxAndArgmax)
+    types_to_check = (tensor.DimShuffle, tensor.Elemwise, tensor.Argmax)
     assert len(fgraph.toposort()) == 4
     for i, type in enumerate(types_to_check):
         assert isinstance(fgraph.toposort()[i].op, type)

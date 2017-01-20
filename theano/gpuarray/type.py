@@ -22,6 +22,26 @@ except ImportError:
 _context_reg = {}
 
 
+def move_to_gpu(data):
+    """
+    Do we want to move this computation to the GPU?
+
+    Currently, we don't move complex and scalar int.
+
+    Parameters
+    ----------
+    data : numpy.ndarray or TensorVariable
+           (it must have dtype and ndim parameter)
+    """
+    # We don't support complex on the GPU
+    if str(data.dtype) in tensor.basic.complex_dtypes:
+        return False
+    # We don't want scalar int on the GPU.
+    if data.ndim == 0 and str(data.dtype) in tensor.basic.discrete_dtypes:
+        return False
+    return True
+
+
 class ContextNotDefined(ValueError):
     pass
 
@@ -82,7 +102,7 @@ def _name_for_ctx(ctx):
     for k, v in iteritems(_context_reg):
         if v == ctx:
             return k
-        raise ContextNotDefined('context is not registered')
+    raise ContextNotDefined('context is not registered')
 
 
 # This is a private method for use by the tests only
@@ -294,7 +314,7 @@ class GpuArrayType(Type):
                          rtol=None, atol=None):
         if a.shape != b.shape or a.dtype != b.dtype:
             return False
-        if 'int' in str(a.dtype):
+        if str(a.dtype) in theano.tensor.discrete_dtypes:
             return GpuArrayType.values_eq(a, b)
         else:
             if allow_remove_inf or allow_remove_nan:
@@ -367,6 +387,7 @@ class GpuArrayType(Type):
                 'float16': (float, 'npy_float16', 'NPY_FLOAT16'),
                 'float32': (float, 'npy_float32', 'NPY_FLOAT32'),
                 'float64': (float, 'npy_float64', 'NPY_FLOAT64'),
+                'bool': (int, 'npy_bool', 'NPY_BOOL'),
                 'uint8': (int, 'npy_uint8', 'NPY_UINT8'),
                 'int8': (int, 'npy_int8', 'NPY_INT8'),
                 'uint16': (int, 'npy_uint16', 'NPY_UINT16'),
@@ -455,9 +476,8 @@ class GpuArrayType(Type):
         return ['gpuarray']
 
     def c_code_cache_version(self):
-        ver = pygpu.gpuarray.api_version()
-        # we only use the major version since the minor revision are
-        # API-compatible.
+        ver = pygpu.gpuarray.abi_version()
+        # we only use the major version since the minor revision are compatible.
         return (2, ver[0])
 
 
@@ -561,15 +581,21 @@ class GpuArraySharedVariable(_operators, SharedVariable):
 
 
 GpuArrayType.SharedVariable = GpuArraySharedVariable
+notset = object()
 
 
 def gpuarray_shared_constructor(value, name=None, strict=False,
                                 allow_downcast=None, borrow=False,
-                                broadcastable=None, target=None):
+                                broadcastable=None, target=notset):
     """
     SharedVariable constructor for GpuArrayType.
 
     See :func:`theano.shared`.
+
+    :target: default None
+        The device target. As None is a valid value and we need to
+        differentiate from the parameter notset and None, we use a
+        notset object.
 
     """
     if target == 'gpu' or target == 'cpu':
@@ -578,6 +604,10 @@ def gpuarray_shared_constructor(value, name=None, strict=False,
     if not isinstance(value, (numpy.ndarray, pygpu.gpuarray.GpuArray)):
         raise TypeError('ndarray or GpuArray required')
 
+    if target is notset:
+        target = None
+        if not move_to_gpu(value):
+            raise TypeError('We do not move that data by default to the GPU')
     try:
         get_context(target)
     except ContextNotDefined:

@@ -615,13 +615,13 @@ dimensions, see :meth:`_tensor_py_operators.dimshuffle`.
 
     >>> tensor = theano.tensor.tensor3()
     >>> theano.tensor.shape_padaxis(tensor, axis=0)
-    DimShuffle{x,0,1,2}.0
+    InplaceDimShuffle{x,0,1,2}.0
     >>> theano.tensor.shape_padaxis(tensor, axis=1)
-    DimShuffle{0,x,1,2}.0
+    InplaceDimShuffle{0,x,1,2}.0
     >>> theano.tensor.shape_padaxis(tensor, axis=3)
-    DimShuffle{0,1,2,x}.0
+    InplaceDimShuffle{0,1,2,x}.0
     >>> theano.tensor.shape_padaxis(tensor, axis=-1)
-    DimShuffle{0,1,2,x}.0
+    InplaceDimShuffle{0,1,2,x}.0
 
 .. autofunction:: unbroadcast(x, *axes)
 
@@ -1131,18 +1131,12 @@ Theano indexing with a "mask" (incorrect approach):
 .. doctest:: indexing
 
    >>> t = theano.tensor.arange(9).reshape((3,3))
-   >>> t[t > 4].eval()  # an array with shape (3, 3, 3)
-   array([[[0, 1, 2],
-           [0, 1, 2],
-           [0, 1, 2]],
-   <BLANKLINE>
-          [[0, 1, 2],
-           [0, 1, 2],
-           [3, 4, 5]],
-   <BLANKLINE>
-          [[3, 4, 5],
-           [3, 4, 5],
-           [3, 4, 5]]])
+   >>> t[t > 4].eval()  # an array with shape (3, 3, 3)  # doctest: +ELLIPSIS
+   Traceback (most recent call last):
+     ...
+   TypeError: TensorType does not support boolean mask for indexing such as tensor[x==0].
+   Instead you can use non_zeros() such as tensor[(x == 0).nonzeros()].
+   If you are indexing on purpose with an int8, please cast it to int16.
 
 Getting a Theano result like NumPy:
 
@@ -1150,10 +1144,6 @@ Getting a Theano result like NumPy:
 
    >>> t[(t > 4).nonzero()].eval()
    array([5, 6, 7, 8])
-
-The gradient of Advanced indexing needs in many cases NumPy
-1.8. It is not released yet as of April 30th, 2013. You can use NumPy
-development version to have this feature now.
 
 
 Index-assignment is *not* supported.  If you want to do something like ``a[5]
@@ -1588,7 +1578,7 @@ Linear Algebra
     :param Y: right term
     :type X: symbolic tensor
     :type Y: symbolic tensor
-    :rtype: symbolic matrix or vector
+    :rtype: `symbolic matrix or vector`
     :return: the inner product of `X` and `Y`.
 
 .. function:: outer(X, Y)

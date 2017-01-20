@@ -4,6 +4,7 @@ from nose.tools import assert_raises
 
 import theano
 from theano import tensor
+import theano.tensor.slinalg as slinalg
 from theano.tests.breakpoint import PdbBreakpoint
 from theano.tests import unittest_tools as utt, test_ifelse
 from theano.tensor.tests import test_basic
@@ -16,8 +17,9 @@ from ..basic_ops import (
 from ..blas import GpuGemm
 from ..elemwise import GpuCAReduceCuda, GpuCAReduceCPY, GpuElemwise
 from ..subtensor import GpuSubtensor
+from ..linalg import GpuCusolverSolve, cusolver_available
 
-from .config import mode_with_gpu, test_ctx_name
+from .config import mode_with_gpu, test_ctx_name, SkipTest
 
 
 def test_local_assert():
@@ -249,6 +251,21 @@ class test_gpu_ifelse(test_ifelse.test_ifelse):
     def get_ifelse(self, n):
         return theano.ifelse.IfElse(n, gpu=True, as_view=True)
 
+    def test_lifter_with_inputs_of_graph(self):
+        x = tensor.vector()
+        cond = tensor.iscalar()
+        f = theano.function([x, cond],
+                            theano.ifelse.ifelse(cond, x.mean(), x.sum()),
+                            mode=mode_with_gpu)
+        assert f(numpy.float32([1, 2, 3]), 0) == 6
+
+        x = tensor.vector()
+        cond = tensor.scalar()
+        f = theano.function([x, cond],
+                            theano.ifelse.ifelse(cond, x.mean(), x.sum()),
+                            mode=mode_with_gpu)
+        assert f(numpy.float32([1, 2, 3]), 0) == 6
+
 
 def test_print_op():
     """ Test that print ops don't block gpu optimization"""
@@ -472,3 +489,29 @@ def test_local_assert_no_cpu_op():
         theano.function([], out, mode=mode_local_assert)
     finally:
         theano.config.assert_no_cpu_op = old
+
+
+def test_no_complex():
+    width_var = tensor.cscalar()
+    freq_var = tensor.fscalar()
+    signal_var = tensor.fscalar()
+    stft_out = tensor.exp(width_var * freq_var) * signal_var
+    theano.function([width_var, freq_var, signal_var], stft_out,
+                    mode=mode_with_gpu)
+
+
+def test_local_lift_solve():
+    if not cusolver_available:
+        raise SkipTest('No cuSolver')
+    A = tensor.fmatrix()
+    b = tensor.fmatrix()
+    o = slinalg.solve(A, b)
+    f_cpu = theano.function([A, b], o)
+    f_gpu = theano.function([A, b], o, mode=mode_with_gpu)
+    assert not any(isinstance(n.op, slinalg.Solve)
+                   for n in f_gpu.maker.fgraph.apply_nodes)
+    assert any(isinstance(n.op, GpuCusolverSolve)
+               for n in f_gpu.maker.fgraph.apply_nodes)
+    A_val = numpy.random.uniform(-0.4, 0.4, (5, 5)).astype("float32")
+    b_val = numpy.random.uniform(-0.4, 0.4, (5, 3)).astype("float32")
+    utt.assert_allclose(f_cpu(A_val, b_val), f_gpu(A_val, b_val))

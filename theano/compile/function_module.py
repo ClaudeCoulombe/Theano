@@ -794,9 +794,16 @@ class Function(object):
                             function_name += ' with name "' + self.name + '"'
                         if hasattr(arg, 'name') and arg.name:
                             argument_name += ' with name "' + arg.name + '"'
-                        e.args = ("Bad input " + argument_name + " to " +
-                                  function_name + " at index %d (0-based)"
-                                  % i,) + e.args
+                        where = theano.gof.utils.get_variable_trace_string(
+                            self.maker.inputs[i].variable)
+                        if len(e.args) == 1:
+                            e.args = ("Bad input " + argument_name + " to " +
+                                      function_name + " at index %d (0-based). %s"
+                                      % (i, where) + e.args[0],)
+                        else:
+                            e.args = ("Bad input " + argument_name + " to " +
+                                      function_name + " at index %d (0-based). %s"
+                                      % (i, where),) + e.args
                         raise
                 s.provided += 1
                 i += 1
@@ -1044,7 +1051,6 @@ copyreg.pickle(Function, _pickle_Function)
 ###
 # FunctionMaker
 ###
-
 def insert_deepcopy(fgraph, wrapped_inputs, wrapped_outputs):
     """
     Insert deepcopy in the fgraph to break aliasing of outputs
@@ -1060,17 +1066,18 @@ def insert_deepcopy(fgraph, wrapped_inputs, wrapped_outputs):
     # memory contract
 
     # We don't insert deep copy when the output.borrow is True for all
-    # conserned outputs.
+    # concerned outputs.
 
     assert len(wrapped_inputs) == len(fgraph.inputs)
     assert len(wrapped_outputs) == len(fgraph.outputs)
     reason = "insert_deepcopy"
-    updated_fgraph_inputs = [fgraph_i for i, fgraph_i in
-                             zip(wrapped_inputs, fgraph.inputs)
-                             if getattr(i, 'update', False)]
+    updated_fgraph_inputs = set([fgraph_i for i, fgraph_i in
+                                zip(wrapped_inputs, fgraph.inputs)
+                                if getattr(i, 'update', False)])
 
     # We can't use fgraph.inputs as this don't include Constant Value.
     all_graph_inputs = gof.graph.inputs(fgraph.outputs)
+    has_destroyers = hasattr(fgraph, 'get_destroyers_of')
 
     for i in xrange(len(fgraph.outputs)):
         views_of_output_i = set()
@@ -1099,12 +1106,9 @@ def insert_deepcopy(fgraph, wrapped_inputs, wrapped_outputs):
                 #    e.g. in-place computations
                 # b) that j'th input is a shared variable that is also
                 #    being updated
-                if (hasattr(fgraph, 'get_destroyers_of') and
-                        fgraph.get_destroyers_of(input_j)):
-                    continue
                 if input_j in updated_fgraph_inputs:
                     continue
-                if input_j in views_of_output_i:
+                if input_j in views_of_output_i and not (has_destroyers and fgraph.get_destroyers_of(input_j)):
                     # We don't put deep_copy_op if the input and the
                     # output have borrow==True
                     if input_j in fgraph.inputs:
@@ -1381,17 +1385,11 @@ class FunctionMaker(object):
                  output_keys=None):
         mode = theano.compile.mode.get_mode(mode)
 
-        # figure out which profile object to use (if any)
-        # to help with forward-porting ProfileMode,
-        # we allow ProfileMode to provide a ProfileStats object
-        # using this somewhat awkward mechanism.
-        mode_profile = getattr(mode, 'profile', None)
-        if (profile is not None and
-                profile is not False and
-                mode_profile is not None):
+        # Assert old way of working isn't used
+        if getattr(mode, 'profile', None):
             raise TypeError(
-                'profile passed via both "mode" and "profile" arguments')
-        self.profile = profile = profile or mode_profile
+                "profile passed via 'mode'. This isn't supported anymore")
+        self.profile = profile
         if profile:
             # This is very important:
             # 1) We preload the cache here to don't have its timming
@@ -1747,9 +1745,6 @@ def orig_function(inputs, outputs, mode=None, accept_inplace=False,
     - FAST_RUN (default) (optimize without too much time)
 
     - FAST_COMPILE (minimal optimization)
-
-    - ProfileMode(deprecated): allow to print a profile mode with
-      mode.print_summary
 
     - DebugMode: verify many internal conditions that are normally assumed
       (slow)

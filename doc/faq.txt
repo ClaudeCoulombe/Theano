@@ -8,7 +8,7 @@ Frequently Asked Questions
 
 Does Theano support Python 3?
 ------------------------------
-We support both Python 2 >= 2.6 and Python 3 >= 3.3.
+We support both Python 2 >= 2.7 and Python 3 >= 3.3.
 
 Output slight numerical difference
 ----------------------------------
@@ -162,6 +162,12 @@ but requires that all nodes in the graph have a C implementation:
     f = function([x], (x + 1.) * 2, mode=theano.Mode(linker='c'))
     f(10.)
 
+New GPU backend using libgpuarray
+---------------------------------
+
+The new theano GPU backend (:ref:`gpuarray`) uses ``config.gpuarray.preallocate`` for GPU memory allocation. 
+
+Likewise, the old back-end uses ``config.lib.cnmem`` for GPU memory allocation. 
 
 Related Projects
 ----------------

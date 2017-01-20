@@ -7,7 +7,8 @@ import numpy
 from theano import Op, Apply, Type, Variable
 from theano import tensor, config
 from theano.gradient import grad_undefined
-from theano.tensor.basic import Alloc, Join, Split
+from theano.tensor.basic import (
+    Alloc, AllocEmpty, alloc_validate_shape, Join, Split)
 
 from theano.gof import HideC, COp
 from theano.gof.utils import MethodNotDefined
@@ -169,11 +170,18 @@ class Kernel(object):
     objvar: str
         the name of the variable for the kernel object.
         (defaults to `k_` + name)
+    fname: str
+        the name of the function wrapper.
+        (defaults to name + `_call`)
+    sname: str
+        the name of the scheduled call function
+        (defaults to name _ `_scall`)
 
     """
 
     def __init__(self, code, params, name, flags,
-                 codevar=None, binvar=None, objvar=None):
+                 codevar=None, binvar=None, objvar=None, fname=None,
+                 sname=None):
         self.code = code
         self.params = params
         self.name = name
@@ -187,6 +195,12 @@ class Kernel(object):
         if objvar is None:
             objvar = 'k_' + name
         self.objvar = objvar
+        if fname is None:
+            fname = name + '_call'
+        self.fname = fname
+        if sname is None:
+            sname = name + '_scall'
+        self.sname = sname
 
     @staticmethod
     def get_flags(*types):
@@ -253,6 +267,19 @@ class Kernel(object):
         return ', '.join(m(t) for t in self.params)
 
 
+def get_ctype(dtype):
+    if dtype is gpuarray.GpuArray:
+        return "gpudata *"
+    elif dtype == gpuarray.SIZE:
+        return "size_t"
+    elif dtype == gpuarray.SSIZE:
+        return "ssize_t"
+    else:
+        if not isinstance(dtype, numpy.dtype):
+            dtype = numpy.dtype(dtype)
+        return 'npy_' + dtype.name
+
+
 class GpuKernelBase(object):
     """
     Base class for operations that need to compile kernels.
@@ -276,7 +303,15 @@ class GpuKernelBase(object):
             o = super(GpuKernelBase, self).c_headers()
         except MethodNotDefined:
             o = []
-        return o + ['gpuarray/types.h']
+        return o + ['gpuarray/types.h', 'numpy/npy_common.h']
+
+    def c_header_dirs(self):
+        try:
+            o = super(GpuKernelBase, self).c_header_dirs()
+        except MethodNotDefined:
+            o = []
+        # We rely on the input types for the directory to gpuarray includes
+        return o + [numpy.get_include()]
 
     def _generate_kernel_bin(self, k, ctx):
         gk = gpuarray.GpuKernel(k.code, k.name, k.params, context=ctx,
@@ -295,14 +330,45 @@ class GpuKernelBase(object):
     def _generate_kernel_vars(self, k):
         return """GpuKernel %(kname)s;""" % dict(kname=k.objvar)
 
-    def c_support_code(self):
+    def _generate_kernel_wrap(self, k):
+        args = []
+        setargs = []
+        for i, p in enumerate(k.params):
+            args.append("{} arg{}".format(get_ctype(p), i))
+            if p is gpuarray.GpuArray:
+                setarg = "GpuKernel_setarg(&{0}, {1}, arg{1});"
+            else:
+                setarg = "GpuKernel_setarg(&{0}, {1}, &arg{1});"
+            setargs.append(setarg.format(k.objvar, i))
+
+        args = ', '.join(args)
+        setargs = '\n  '.join(setargs)
+
         return """
-        template <typename T>
-        static T ceil_intdiv(T a, T b)
-        {
-            return (a/b) + ((a % b) ? 1: 0);
-        }
-        """
+int {fname}(unsigned int _nd, size_t *_gdim, size_t *_ldim, size_t _shared,
+                  {args}) {{
+  {setargs}
+
+  return GpuKernel_call(&{kname}, _nd, _gdim, _ldim, _shared, NULL);
+}}
+
+int {sname}(unsigned int _nd, size_t *_n, size_t _shared, {args}) {{
+  size_t _gs = 0;
+  size_t _ls = 0;
+  int _err;
+
+  if (_nd != 1) return GA_UNSUPPORTED_ERROR;
+
+  _err = GpuKernel_sched(&{kname}, _n[0], &_gs, &_ls);
+  if (_err != GA_NO_ERROR)
+    return _err;
+
+  {setargs}
+
+  return GpuKernel_call(&{kname}, 1, &_gs, &_ls, _shared, NULL);
+}}
+        """.format(args=args, fname=k.fname, setargs=setargs, sname=k.sname,
+                   kname=k.objvar)
 
     def c_support_code_apply(self, node, name):
         kernels = self.gpu_kernels(node, name)
@@ -313,7 +379,9 @@ class GpuKernelBase(object):
 
     def c_support_code_struct(self, node, name):
         kernels = self.gpu_kernels(node, name)
-        return '\n'.join(self._generate_kernel_vars(k) for k in kernels)
+        kvars = '\n'.join(self._generate_kernel_vars(k) for k in kernels)
+        wrappers = '\n'.join(self._generate_kernel_wrap(k) for k in kernels)
+        return kvars + '\n' + wrappers
 
     def _generate_zeros(self, k):
         return """memset(&%(v)s, 0, sizeof(%(v)s));""" % dict(v=k.objvar)
@@ -375,7 +443,7 @@ class GpuKernelBase(object):
             The node that we need the cache version for.
 
         """
-        return (4, self.get_params(node).bin_id)
+        return (7, self.get_params(node).bin_id)
 
 
 def forward_string_meth(name):
@@ -413,11 +481,13 @@ class CGpuKernelBase(COp, GpuKernelBase):
 
     kernel_re = re.compile(r'^#kernel ([a-zA-Z_].*?)$', re.MULTILINE)
 
-    c_support_code = forward_string_meth('c_support_code')
     c_support_code_apply = forward_string_meth('c_support_code_apply')
     c_support_code_struct = forward_string_meth('c_support_code_struct')
     c_init_code_struct = forward_string_meth('c_init_code_struct')
     c_cleanup_code_struct = forward_string_meth('c_cleanup_code_struct')
+
+    def c_code_cache_version_apply(self, node):
+        return GpuKernelBase.c_code_cache_version_apply(self, node)
 
     def _type_macros(self, node):
         define_template = "#define %s %s\n"
@@ -574,6 +644,8 @@ class GpuFromHost(Op):
     def make_node(self, x):
         if not isinstance(x.type, tensor.TensorType):
             raise TypeError(x)
+        if "complex" in x.dtype:
+            raise TypeError("complex not supported in the new gpuarray back-end.", x)
         return Apply(self, [x], [GpuArrayType(broadcastable=x.broadcastable,
                                               context_name=self.context_name,
                                               dtype=x.dtype)()])
@@ -751,7 +823,7 @@ class GpuAlloc(HideC, Alloc):
 
     def make_node(self, value, *shape):
         value = as_gpuarray_variable(value, context_name=self.context_name)
-        sh, bcast = self.validate_shape(shape)
+        sh, bcast = alloc_validate_shape(shape)
         if value.ndim > len(sh):
             TypeError("The GpuAlloc value to use has more dimensions "
                       "than the specified shape", value.ndim, len(sh))
@@ -887,7 +959,7 @@ def gpu_alloc(ctx, memset_0=False):
 gpu_alloc.cache = {}
 
 
-class GpuAllocEmpty(HideC, Alloc):
+class GpuAllocEmpty(HideC, AllocEmpty):
     """
     Allocate uninitialized memory on the GPU.
 
@@ -904,7 +976,7 @@ class GpuAllocEmpty(HideC, Alloc):
         return get_context(self.context_name)
 
     def make_node(self, *shape):
-        sh, bcast = self.validate_shape(shape)
+        sh, bcast = alloc_validate_shape(shape)
         output = GpuArrayType(dtype=self.dtype, broadcastable=bcast,
                               context_name=self.context_name)()
         output.tag.values_eq_approx = tensor.type.values_eq_approx_always_true
@@ -1173,7 +1245,18 @@ class GpuJoin(HideC, Join):
 
     """
     _f16_ok = True
+    __props__ = ("view",)
     params_type = gpu_context_type
+
+    def __init__(self, view=-1):
+        self.view = view
+        if view != -1:
+            # since the first input is always the axis, the tensors
+            # start from index 1.
+            self.view_map = {0: [1 + view]}
+
+    def __str__(self):
+        return Join.__str__(self)
 
     def make_node(self, axis, *tensors):
         node = Join.make_node(self, axis, *tensors)
@@ -1193,61 +1276,98 @@ class GpuJoin(HideC, Join):
 
     def perform(self, node, axis_and_tensors, out_, ctx):
         out, = out_
+        view = self.view
         axis = int(axis_and_tensors[0])
+        tensors = axis_and_tensors[1:]
+
         if axis < -axis_and_tensors[1].ndim:
             raise IndexError
         if axis < 0:
             axis += axis_and_tensors[1].ndim
-        tensors = axis_and_tensors[1:]
-        out[0] = pygpu.concatenate(tensors, axis=axis, context=ctx).astype(
-            node.outputs[0].dtype)
+        # we check these tensors for being empty.
+        if (view != -1) and numpy.all(
+                [tensor.shape[axis] == 0 for tensor in
+                 tensors[0:view] + tensors[view + 1:]]):
+            out[0] = tensors[view]
+        else:
+            out[0] = pygpu.concatenate(tensors, axis=axis, context=ctx).astype(
+                node.outputs[0].dtype)
 
     def c_code_cache_version(self):
-        return (2,)
+        return (3,)
 
     def c_support_code(self):
         return """
-#if PY_MAJOR_VERSION >= 3
-#define PyInt_AsLong PyLong_AsLong
-#endif
-"""
+        #if PY_MAJOR_VERSION >= 3
+        #define PyInt_AsLong PyLong_AsLong
+        #endif
+        """
+
+    def c_headers(self):
+        return ['<numpy_compat.h>']
 
     def c_code(self, node, name, inputs, out_, sub):
+        axis, tensors = inputs[0], inputs[1:]
         copy_to_list = []
         restype = pygpu.gpuarray.dtype_to_typecode(node.outputs[0].dtype)
-        for i, inp in enumerate(inputs[1:]):
+        view = self.view
+        non_empty_tensor = tensors[view]
+        for i, inp in enumerate(tensors):
             copy_to_list.append("als[%s] = &%s->ga;" % (i, inp))
-        return """
-const GpuArray **als = (const GpuArray **)PyMem_Malloc(sizeof(GpuArray *) *
+
+        n = len(tensors)
+        fail = sub['fail']
+        out = out_[0]
+        copy_inputs_to_list = '\n'.join(copy_to_list)
+        restype = restype
+        ctx = sub['params']
+
+        code = """
+        const GpuArray **als = (const GpuArray **)PyMem_Malloc(sizeof(GpuArray *) *
                                                        %(n)s);
-if (als == NULL) {
-  PyErr_NoMemory();
-  %(fail)s
-}
-%(copy_inputs_to_list)s
-Py_XDECREF(%(out)s);
-{
-int axis = PyInt_AsLong((PyObject *)%(axis)s);
-if (axis < 0) {
-  if (axis == -1 && PyErr_Occurred()) {
-    %(fail)s
-  }
-  axis += als[0]->nd;
-  if (axis < 0) {
-    PyErr_SetString(PyExc_IndexError, "invalid axis");
-    %(fail)s
-  }
-}
-%(out)s = pygpu_concatenate(als, %(n)s, axis,
-                            %(restype)s, (PyObject *)&PyGpuArrayType,
-                            %(ctx)s);
-}
-PyMem_Free(als);
-if (%(out)s == NULL)
-  %(fail)s
-        """ % dict(n=len(inputs[1:]), fail=sub['fail'], out=out_[0],
-                   axis=inputs[0], copy_inputs_to_list='\n'.join(copy_to_list),
-                   restype=restype, ctx=sub['params'])
+        if (als == NULL) {
+            PyErr_NoMemory();
+            %(fail)s
+        }
+        %(copy_inputs_to_list)s
+        Py_XDECREF(%(out)s);
+        {
+            int axis = PyInt_AsLong((PyObject *)%(axis)s);
+            if (axis < 0) {
+                if (axis == -1 && PyErr_Occurred()) {
+                    %(fail)s
+                }
+                axis += als[0]->nd;
+                if (axis < 0) {
+                    PyErr_SetString(PyExc_IndexError, "invalid axis");
+                    %(fail)s
+                }
+            }
+
+            int tensors_lens_sum;
+            if(%(view)s != -1) {
+                tensors_lens_sum = 0;
+                for(int i=0; i < %(n)s; i++){
+                    tensors_lens_sum += als[i]->dimensions[axis];
+                }
+                tensors_lens_sum -= PyGpuArray_DIM(%(non_empty_tensor)s, axis);
+            }
+
+            if(%(view)s != -1 && tensors_lens_sum == 0) {
+                Py_INCREF(%(non_empty_tensor)s);
+                %(out)s = %(non_empty_tensor)s;
+            }else{
+                %(out)s = pygpu_concatenate(als, %(n)s, axis,
+                                            %(restype)s, (PyObject *)&PyGpuArrayType,
+                                            %(ctx)s);
+            }
+        }
+        PyMem_Free(als);
+        if (%(out)s == NULL)
+            %(fail)s
+
+        """ % locals()
+        return code
 
 gpu_join = GpuJoin()
 
@@ -1309,7 +1429,7 @@ class GpuEye(GpuKernelBase, Op):
 
     def gpu_kernels(self, node, name):
         code = """
-KERNEL void k(GLOBAL_MEM %(ctype)s *a, ga_size n, ga_size m) {
+KERNEL void eye(GLOBAL_MEM %(ctype)s *a, ga_size n, ga_size m) {
     ga_size nb = n < m ? n : m;
     for (ga_size i = LID_0; i < nb; i += LDIM_0) {
         a[i*m + i] = %(write_a)s(1);
@@ -1317,7 +1437,7 @@ KERNEL void k(GLOBAL_MEM %(ctype)s *a, ga_size n, ga_size m) {
 }""" % dict(ctype=pygpu.gpuarray.dtype_to_ctype(self.dtype),
             name=name, write_a=write_w(self.dtype))
         return [Kernel(
-                code=code, name="k",
+                code=code, name="eye",
                 params=[gpuarray.GpuArray, gpuarray.SIZE, gpuarray.SIZE],
                 flags=Kernel.get_flags(self.dtype),
                 objvar='k_eye_' + name)]
@@ -1333,7 +1453,6 @@ KERNEL void k(GLOBAL_MEM %(ctype)s *a, ga_size n, ga_size m) {
         s = """
         size_t dims[2] = {0, 0};
         size_t ls, gs;
-        void *args[3];
         int err;
 
         dims[0] = ((dtype_%(n)s*)PyArray_DATA(%(n)s))[0];
@@ -1348,12 +1467,9 @@ KERNEL void k(GLOBAL_MEM %(ctype)s *a, ga_size n, ga_size m) {
             %(fail)s
         }
 
-        args[0] = %(z)s->ga.data;
-        args[1] = &dims[0];
-        args[2] = &dims[1];
         ls = 1;
         gs = 256;
-        err = GpuKernel_call(&%(kname)s, 1, &ls, &gs, 0, args);
+        err = eye_call(1, &gs, &ls, 0, %(z)s->ga.data, dims[0], dims[1]);
         if (err != GA_NO_ERROR) {
             PyErr_Format(PyExc_RuntimeError,
                          "gpuarray error: kEye: %%s. n%%lu, m=%%lu.",
@@ -1369,4 +1485,4 @@ KERNEL void k(GLOBAL_MEM %(ctype)s *a, ga_size n, ga_size m) {
         return s
 
     def c_code_cache_version(self):
-        return (5,)
+        return (6,)

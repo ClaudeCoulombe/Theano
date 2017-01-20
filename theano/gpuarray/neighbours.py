@@ -38,8 +38,8 @@ class GpuImages2Neibs(GpuKernelBase, Images2Neibs, Op):
         assert ten4.ndim == 4
         assert neib_shape.ndim == 1
         assert neib_step.ndim == 1
-        assert "int" in neib_shape.dtype
-        assert "int" in neib_step.dtype
+        assert neib_shape.dtype in T.integer_dtypes
+        assert neib_step.dtype in T.integer_dtypes
 
         return Apply(self, [ten4, neib_shape, neib_step],
                      [GpuArrayType(broadcastable=(False, False),
@@ -241,6 +241,15 @@ class GpuImages2Neibs(GpuKernelBase, Images2Neibs, Op):
         kernels.append(Kernel(code=code, name=kname, params=params,
                               flags=flags, objvar=k_var))
         return kernels
+
+    def c_support_code(self):
+        return """
+        template <typename T>
+        static T ceil_intdiv(T a, T b)
+        {
+            return (a/b) + ((a % b) ? 1: 0);
+        }
+        """
 
     def c_code(self, node, name, inp, out, sub):
         dtype_ten4 = node.inputs[0].dtype
@@ -461,7 +470,7 @@ class GpuImages2Neibs(GpuKernelBase, Images2Neibs, Op):
                                      (void *)&stride_Z1,
                                      (void *)%(z)s->ga.data,
                                      (void *)&%(z)s->ga.offset};
-            err = GpuKernel_call(fptr, 3, threads_per_block, n_blocks, 0, kernel_params);
+            err = GpuKernel_call(fptr, 3, n_blocks, threads_per_block, 0, kernel_params);
             %(err_check)s
             %(sync)s
         } // END NESTED SCOPE

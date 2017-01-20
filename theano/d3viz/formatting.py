@@ -11,10 +11,13 @@ from six import iteritems, itervalues
 
 import theano
 from theano import gof
-from theano.compile.profilemode import ProfileMode
 from theano.compile import Function
 from theano.compile import builders
-from theano.printing import pd, pydot_imported, pydot_imported_msg
+from theano.printing import pydot_imported, pydot_imported_msg
+try:
+    from theano.printing import pd
+except ImportError:
+    pass
 
 
 class PyDotFormatter(object):
@@ -119,14 +122,7 @@ class PyDotFormatter(object):
 
         profile = None
         if isinstance(fct, Function):
-            mode = fct.maker.mode
-            if (not isinstance(mode, ProfileMode) or
-                    fct not in mode.profile_stats):
-                mode = None
-            if mode:
-                profile = mode.profile_stats[fct]
-            else:
-                profile = getattr(fct, "profile", None)
+            profile = getattr(fct, "profile", None)
             outputs = fct.maker.fgraph.outputs
             topo = fct.maker.fgraph.toposort()
         elif isinstance(fct, gof.FunctionGraph):
@@ -237,6 +233,7 @@ class PyDotFormatter(object):
                 gf = PyDotFormatter()
                 # Use different node prefix for sub-graphs
                 gf.__node_prefix = __node_id
+                node.op.prepare_node(node, None, None, 'py')
                 gf(node.op.fn, subgraph)
                 graph.add_subgraph(subgraph)
                 pd_node.get_attributes()['subg'] = subgraph.get_name()
@@ -253,12 +250,7 @@ class PyDotFormatter(object):
                 pd_node.get_attributes()['subg_map_inputs'] = h
 
                 # Outputs mapping
-                ext_outputs = []
-                for n in topo:
-                    for i in n.inputs:
-                        h = i.owner if i.owner else i
-                        if h is node:
-                            ext_outputs.append(self.__node_id(n))
+                ext_outputs = [self.__node_id(x) for x in node.outputs]
                 int_outputs = node.op.fn.maker.fgraph.outputs
                 int_outputs = [gf.__node_id(x) for x in int_outputs]
                 assert len(ext_outputs) == len(int_outputs)
@@ -292,7 +284,10 @@ def var_tag(var):
     """Parse tag attribute of variable node."""
     tag = var.tag
     if hasattr(tag, 'trace') and len(tag.trace) and len(tag.trace[0]) == 4:
-        path, line, _, src = tag.trace[0]
+        if isinstance(tag.trace[0][0], (tuple, list)):
+            path, line, _, src = tag.trace[0][-1]
+        else:
+            path, line, _, src = tag.trace[0]
         path = os.path.basename(path)
         path = path.replace('<', '')
         path = path.replace('>', '')

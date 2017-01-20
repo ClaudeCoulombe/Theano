@@ -1,5 +1,6 @@
 """Driver for gradient calculations."""
 from __future__ import absolute_import, print_function, division
+from collections import OrderedDict
 import six.moves.builtins as builtins
 import logging
 import time
@@ -12,7 +13,7 @@ import theano
 
 from theano import gof
 from theano.gof import utils, Variable
-from theano.compat import OrderedDict, izip
+from theano.compat import izip
 from six.moves import xrange, reduce
 from theano.gof.null_type import NullType, null_type
 from theano.gof.op import get_debug_values
@@ -150,6 +151,8 @@ class DisconnectedType(theano.gof.type.Type):
 
     def __str__(self):
         return 'DisconnectedType'
+
+
 disconnected_type = DisconnectedType()
 
 
@@ -172,7 +175,7 @@ def Rop(f, wrt, eval_points):
                described by `f`
     :type eval_points: Variable or list of Variables
                        evalutation points for each of the variables in `wrt`
-    :rtype: Variable or list/tuple of Variables depending on type of f
+    :rtype: :class:`~theano.gof.Variable` or list/tuple of Variables depending on type of f
     :return: symbolic expression such that
         R_op[i] = sum_j ( d f[i] / d wrt[j]) eval_point[j]
         where the indices in that expression are magic multidimensional
@@ -239,7 +242,7 @@ def Rop(f, wrt, eval_points):
             elif inp.owner is None:
                 try:
                     local_eval_points.append(inp.zeros_like())
-                except:
+                except Exception:
                     # None should be used for non-differentiable
                     # arguments, like for example random states
                     local_eval_points.append(None)
@@ -319,7 +322,7 @@ def Lop(f, wrt, eval_points, consider_constant=None,
     :type eval_points: Variable or list of Variables
                         evalutation points for each of the variables in `f`
 
-    :rtype: Variable or list/tuple of Variables depending on type of f
+    :rtype: :class:`~theano.gof.Variable` or list/tuple of Variables depending on type of f
     :return: symbolic expression such that
         L_op[i] = sum_i ( d f[i] / d wrt[j]) eval_point[i]
         where the indices in that expression are magic multidimensional
@@ -344,7 +347,7 @@ def Lop(f, wrt, eval_points, consider_constant=None,
         wrt = [wrt]
 
     assert len(f) == len(grads)
-    known = dict(izip(f, grads))
+    known = OrderedDict(izip(f, grads))
 
     ret = grad(cost=None, known_grads=known,
                consider_constant=consider_constant, wrt=wrt,
@@ -371,10 +374,10 @@ def grad(cost, wrt, consider_constant=None,
 
     Parameters
     ----------
-    cost : scalar (0-dimensional) tensor variable or None
+    cost : :class:`~theano.gof.Variable` scalar (0-dimensional) tensor variable or None
         Value with respect to which we are differentiating.  May be
         `None` if known_grads is provided.
-    wrt : variable or list of variables
+    wrt : :class:`~theano.gof.Variable` or list of Variables
         term[s] for which we want gradients
     consider_constant : list of variables
         expressions not to backpropagate through
@@ -476,7 +479,7 @@ def grad(cost, wrt, consider_constant=None,
         # function, sure, but nonetheless one we can and should support.
         # So before we try to cast it make sure it even has a dtype
         if (hasattr(g_cost.type, 'dtype') and
-                cost.type.dtype not in tensor.discrete_dtypes):
+                cost.type.dtype in tensor.continuous_dtypes):
                 # Here we enforce the constraint that floating point variables
                 # have the same dtype as their gradient.
                 g_cost = g_cost.astype(cost.type.dtype)
@@ -484,7 +487,7 @@ def grad(cost, wrt, consider_constant=None,
         # This is to be enforced by the Op.grad method for the
         # Op that outputs cost.
         if hasattr(g_cost.type, 'dtype'):
-            assert g_cost.type.dtype not in tensor.discrete_dtypes
+            assert g_cost.type.dtype in tensor.continuous_dtypes
 
         grad_dict[cost] = g_cost
 
@@ -645,7 +648,7 @@ def subgraph_grad(wrt, end, start=None, cost=None, details=False):
       to the variables in `end` (they are used as known_grad in
       theano.grad).
 
-    :type cost: scalar (0-dimensional) variable
+    :type cost: :class:`~theano.gof.Variable` scalar (0-dimensional) variable
     :param cost:
       Additional costs for which to compute the gradients.  For
       example, these could be weight decay, an l1 constraint, MSE,
@@ -1101,7 +1104,8 @@ def _populate_grad_dict(var_to_app_to_idx,
                                 str(o_shape) + " on an output of shape " +
                                 str(g_shape))
 
-                input_grads = node.op.grad(inputs, new_output_grads)
+                input_grads = node.op.L_op(inputs, node.outputs,
+                                           new_output_grads)
 
                 if input_grads is None:
                     raise TypeError("%s.grad returned NoneType, "
@@ -1333,12 +1337,11 @@ def _float_ones_like(x):
     """ Like ones_like, but forces the object to have a
     floating point dtype """
 
-    rval = tensor.ones_like(x)
+    dtype = x.type.dtype
+    if dtype not in tensor.float_dtypes:
+        dtype = theano.config.floatX
 
-    if rval.type.dtype.find('float') != -1:
-        return rval
-
-    return rval.astype(theano.config.floatX)
+    return tensor.ones_like(x, dtype=dtype)
 
 
 class numeric_grad(object):
@@ -1372,10 +1375,10 @@ class numeric_grad(object):
     # perfectly accurate.
     type_eps = {'float64': 1e-7,
                 'float32': 3e-4,
-                'float16': 1e-3,
+                'float16': 1e-1,
                 numpy.dtype('float64'): 1e-7,
                 numpy.dtype('float32'): 3e-4,
-                numpy.dtype('float16'): 1e-3}
+                numpy.dtype('float16'): 1e-1}
 
     def __init__(self, f, pt, eps=None, out_type=None):
         """Return the gradient of f at pt.
@@ -1748,6 +1751,7 @@ Exception args: %s""" % (self.err_pos, self.arg,
                          self.rel_err, self.rel_tol,
                          args_msg)
 
+
 verify_grad.E_grad = GradientError
 
 
@@ -1993,6 +1997,7 @@ class DisconnectedGrad(ViewOp):
     def connection_pattern(self, node):
         return [[False]]
 
+
 disconnected_grad_ = DisconnectedGrad()
 
 
@@ -2061,3 +2066,35 @@ def grad_clip(x, lower_bound, upper_bound):
 
     """
     return GradClip(lower_bound, upper_bound)(x)
+
+
+class GradScale(ViewOp):
+    def __init__(self, multiplier):
+        self.multiplier = multiplier
+
+    def grad(self, args, g_outs):
+        return [self.multiplier * g_out for g_out in g_outs]
+
+
+def grad_scale(x, multiplier):
+    """
+    This op scale or inverse the gradient in the backpropagation.
+
+    :param x: the variable we want its gradient inputs scale
+    :param multiplier: scale of the gradient
+
+    :examples:
+
+        x = theano.tensor.fscalar()
+        fx = theano.tensor.sin(x)
+
+        fp = theano.tensor.grad(fx, wrt=x)
+        fprime = theano.function([x], fp)
+        print(fprime(2))#-0.416
+
+        f_inverse=grad_scale(fx,-1.)
+        fpp = theano.tensor.grad(f_inverse, wrt=x)
+        fpprime = theano.function([x], fpp)
+        print(fpprime(2))#0.416
+    """
+    return GradScale(multiplier)(x)

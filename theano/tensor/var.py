@@ -1,4 +1,5 @@
 from __future__ import absolute_import, print_function, division
+import collections
 import copy
 import traceback as tb
 import warnings
@@ -87,16 +88,7 @@ class _tensor_py_operators(object):
             return True
         else:
             raise TypeError(
-                "Variables do not support boolean operations. This "
-                "can happen if you do a logical operation (<, <=, >, <=, "
-                "==, !=) between a numpy.ndarray and a Theano tensor"
-                "variable. Due to NumPy implementation before NumPy 1.8, "
-                "we cannot make the Python syntax work when the ndarray "
-                "is on the left, and this results in this error. To work "
-                "around that, either call "
-                "theano.tensor.{lt,le,eq,ne,gt,ge}(ndarray, tensor), or "
-                "use the Python syntax with the Theano tensor on the "
-                "left. Or update to NumPy 1.8 or above."
+                "Variables do not support boolean operations."
             )
 
     # BITWISE
@@ -313,6 +305,7 @@ class _tensor_py_operators(object):
             The length of the shape. Passing None here means for
             Theano to try and guess the length of `shape`.
 
+
         .. warning:: This has a different signature than numpy's
                      ndarray.reshape!
                      In numpy you do not need to wrap the shape arguments
@@ -466,6 +459,25 @@ class _tensor_py_operators(object):
 
     # SLICING/INDEXING
     def __getitem__(self, args):
+
+        def check_bool(args_el):
+            try:
+                if (isinstance(args_el, (numpy.bool_, bool)) or
+                        args_el.dtype == 'bool'):
+                    raise TypeError('TensorType does not support boolean '
+                                    'mask for indexing such as tensor[x==0]. '
+                                    'Instead you can use non_zeros() such as '
+                                    'tensor[(x == 0).nonzeros()]. ')
+            except AttributeError:
+                pass
+
+            if (not isinstance(args_el, theano.tensor.Variable) and
+                    isinstance(args_el, collections.Iterable)):
+                for el in args_el:
+                    check_bool(el)
+
+        check_bool(args)
+
         if (isinstance(args, list) and
                 any([isinstance(a, slice) for a in args])):
             pass

@@ -1024,10 +1024,10 @@ def _lessbroken_deepcopy(a):
     """
     # this exists because copy.deepcopy on numpy arrays is broken
     # This logic is also in link.py
-    from theano.gof.type import CDataType
+    from theano.gof.type import _cdata_type
     if type(a) in (numpy.ndarray, numpy.memmap):
         rval = a.copy()
-    elif type(a) is CDataType._cdata_type:
+    elif type(a) is _cdata_type:
         # This is not copyable (and should be used for constant data).
         rval = a
     else:
@@ -1837,10 +1837,6 @@ class _Linker(gof.link.LocalLinker):
                 thunk.inputs = [storage_map[v] for v in node.inputs]
                 thunk.outputs = [storage_map[v] for v in node.outputs]
                 thunk_other = thunk
-            else:
-                new_node = node.op.prepare_node(node, storage_map, compute_map)
-                if new_node is not None:
-                    node = new_node
 
             debug = hasattr(node.op, 'debug_perform')
 
@@ -1854,6 +1850,7 @@ class _Linker(gof.link.LocalLinker):
                 if not isinstance(node.op, gof.op.Op):
                     raise utils.MethodNotDefined()
 
+                node.op.prepare_node(node, storage_map, compute_map, 'c')
                 thunk = node.op.make_c_thunk(node, storage_map, compute_map,
                                              no_recycling)
                 thunks_c.append(thunk)
@@ -1866,6 +1863,7 @@ class _Linker(gof.link.LocalLinker):
             if (((self.maker.mode.check_py_code or thunks_c[-1] is None) and
                  node.op.perform.__code__ != gof.op.PureOp.perform.__code__) or
                     debug):
+                node.op.prepare_node(node, storage_map, compute_map, 'py')
                 thunk = node.op.make_py_thunk(node, storage_map, compute_map,
                                               no_recycling, debug=debug)
                 thunks_py.append(thunk)
@@ -1875,6 +1873,7 @@ class _Linker(gof.link.LocalLinker):
             if not self.maker.mode.check_c_code and thunks_py[-1] is None:
                 _logger.warn("Op %s doesn't have a perform, "
                              "forcing check of the C code" % node.op)
+                node.op.prepare_node(node, storage_map, compute_map, 'c')
                 thunk = node.op.make_c_thunk(node, storage_map, compute_map,
                                              no_recycling)
                 thunks_c[-1] = thunk

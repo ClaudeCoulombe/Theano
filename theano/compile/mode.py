@@ -150,6 +150,21 @@ optdb = gof.SequenceDB()
 optdb.register('merge1', gof.MergeOptimizer(),
                0, 'fast_run', 'fast_compile', 'merge')
 
+# After scan1 opt at 0.5 and before ShapeOpt at 1
+# This should only remove nodes.
+# The opt should not do anything that need shape inference.
+# New nodes that don't have infer_shape need that the original node
+# also don't have infer_shape
+local_useless = gof.optdb.LocalGroupDB(apply_all_opts=True, profile=True)
+optdb.register(
+    'useless',
+    gof.optdb.TopoDB(local_useless,
+                     failure_callback=gof.opt.NavigatorOptimizer.warn_inplace),
+    0.6, 'fast_run', 'fast_compile')
+
+optdb.register('merge1.1', gof.MergeOptimizer(),
+               0.65, 'fast_run', 'fast_compile', 'merge')
+
 # rearranges elemwise expressions
 optdb.register('canonicalize', gof.EquilibriumDB(ignore_newtrees=False),
                1, 'fast_run', 'fast_compile', 'canonicalize_db')
@@ -376,7 +391,7 @@ def get_mode(orig_string):
                 default_mode_class):
             return instantiated_default_mode
 
-    if string in ['Mode', 'ProfileMode', 'DebugMode', 'NanGuardMode']:
+    if string in ['Mode', 'DebugMode', 'NanGuardMode']:
         if string == 'DebugMode':
             # need to import later to break circular dependency.
             from .debugmode import DebugMode
@@ -388,9 +403,6 @@ def get_mode(orig_string):
             # NanGuardMode use its own linker.
             ret = NanGuardMode(True, True, True, optimizer=config.optimizer)
         else:
-            # This might be required if the string is 'ProfileMode'
-            from .profilemode import ProfileMode  # noqa
-            from .profilemode import prof_mode_instance_to_print
             # TODO: Can't we look up the name and invoke it rather than using eval here?
             ret = eval(string +
                        '(linker=config.linker, optimizer=config.optimizer)')
@@ -408,11 +420,6 @@ def get_mode(orig_string):
         if theano.config.optimizer_requiring:
             ret = ret.requiring(*theano.config.optimizer_requiring.split(':'))
         instantiated_default_mode = ret
-
-    # must tell python to print the summary at the end.
-    if string == 'ProfileMode':
-        # need to import later to break circular dependency.
-        prof_mode_instance_to_print.append(ret)
 
     return ret
 

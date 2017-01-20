@@ -5,6 +5,7 @@ help make new Ops more rapidly.
 
 """
 from __future__ import absolute_import, print_function, division
+from collections import OrderedDict
 
 import copy
 import six.moves.cPickle as pickle
@@ -12,7 +13,6 @@ import warnings
 
 import theano
 from theano import gof
-from theano.compat import OrderedDict
 from six import iteritems, integer_types
 from six.moves import xrange
 
@@ -339,7 +339,7 @@ class Shape_i(gof.Op):
         # As i will be used in the hash and that ndarray are not hashable,
         # we need to convert it to an int as it is hashable.
         if isinstance(i, numpy.ndarray):
-            assert "int" in str(i.dtype)
+            assert i.dtype in theano.tensor.integer_dtypes
         assert i == int(i)
         i = int(i)
         self.i = i
@@ -445,12 +445,12 @@ def shape_i(var, i, fgraph=None):
         shape_of = shape_feature.shape_of
 
         def recur(node):
-            if not hasattr(node.outputs[0], 'fgraph'):
+            if not node.outputs[0] in shape_of:
                 for inp in node.inputs:
                     if inp.owner:
                         recur(inp.owner)
                 # If the output var isn't marked as being in the graph,
-                # we need to att it in the ShapeFeature.
+                # we need to add it in the ShapeFeature.
                 shape_feature.on_import(fgraph, node,
                                         'gof.ops.shape_i')
         if var not in shape_of:
@@ -826,7 +826,7 @@ class SpecifyShape(gof.Op):
             x = theano.tensor.as_tensor_variable(x)
         shape = theano.tensor.as_tensor_variable(shape)
         assert shape.ndim == 1
-        assert "int" in shape.dtype
+        assert shape.dtype in theano.tensor.integer_dtypes
         if isinstance(shape, theano.tensor.TensorConstant):
             assert shape.data.size == x.ndim
         return gof.Apply(self, [x, shape], [x.type()])

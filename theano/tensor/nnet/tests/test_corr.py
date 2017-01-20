@@ -10,7 +10,6 @@ import theano
 import theano.tensor as T
 from theano.tests import unittest_tools as utt
 from theano.tensor.nnet import corr, conv
-from theano.tensor.basic import _allclose
 
 
 class TestCorr2D(utt.InferShapeTester):
@@ -28,8 +27,7 @@ class TestCorr2D(utt.InferShapeTester):
         self.filters.name = 'default_filters'
         if not conv.imported_scipy_signal and theano.config.cxx == "":
             raise SkipTest("CorrMM tests need SciPy or a c++ compiler")
-        if not theano.config.blas.ldflags:
-            raise SkipTest("CorrMM tests need a BLAS")
+        # This tests can run even when theano.config.blas.ldflags is empty.
 
     def validate(self, image_shape, filter_shape,
                  border_mode='valid', subsample=(1, 1),
@@ -39,6 +37,8 @@ class TestCorr2D(utt.InferShapeTester):
         :param image_shape: The constant shape info passed to corrMM.
         :param filter_shape: The constant shape info passed to corrMM.
         """
+        if not theano.config.cxx:
+            raise SkipTest("Need cxx to test conv2d")
         N_image_shape = [T.get_scalar_constant_value(T.as_tensor_variable(x))
                          for x in image_shape]
         N_filter_shape = [T.get_scalar_constant_value(T.as_tensor_variable(x))
@@ -132,7 +132,7 @@ class TestCorr2D(utt.InferShapeTester):
                                 icol:icol + dil_fil_shape2d[1]:filter_dilation[1]] * filter2d[::-1, ::-1]
                             ).sum()
 
-        self.assertTrue(_allclose(theano_output, ref_output))
+        utt.assert_allclose(ref_output, theano_output)
 
         # TEST GRADIENT
         if verify_grad:
@@ -267,6 +267,8 @@ class TestCorr2D(utt.InferShapeTester):
         def rand(shape, dtype='float64'):
             r = numpy.asarray(numpy.random.rand(*shape), dtype=dtype)
             return r * 2 - 1
+        if not theano.config.cxx:
+            raise SkipTest("Need cxx to test conv2d")
 
         ops = [corr.CorrMM, corr.CorrMM_gradWeights, corr.CorrMM_gradInputs]
         a_shapes = [[4, 5, 6, 3], [1, 5, 6, 3], [1, 5, 6, 3]]
@@ -290,6 +292,8 @@ class TestCorr2D(utt.InferShapeTester):
     def test_infer_shape_forward(self):
         if theano.config.mode == "FAST_COMPILE":
             raise SkipTest("CorrMM don't work in FAST_COMPILE")
+        if not theano.config.cxx:
+            raise SkipTest("Need cxx for this test")
 
         def rand(*shape):
             r = numpy.asarray(numpy.random.rand(*shape), dtype='float64')
@@ -321,6 +325,8 @@ class TestCorr2D(utt.InferShapeTester):
     def test_infer_shape_gradW(self):
         if theano.config.mode == "FAST_COMPILE":
             raise SkipTest("CorrMM don't work in FAST_COMPILE")
+        if not theano.config.cxx:
+            raise SkipTest("Need cxx for this test")
 
         def rand(*shape):
             r = numpy.asarray(numpy.random.rand(*shape), dtype='float64')
@@ -359,6 +365,8 @@ class TestCorr2D(utt.InferShapeTester):
     def test_infer_shape_gradI(self):
         if theano.config.mode == "FAST_COMPILE":
             raise SkipTest("CorrMM don't work in FAST_COMPILE")
+        if not theano.config.cxx:
+            raise SkipTest("Need cxx for this test")
 
         def rand(*shape):
             r = numpy.asarray(numpy.random.rand(*shape), dtype='float64')
