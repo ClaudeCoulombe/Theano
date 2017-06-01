@@ -1,6 +1,6 @@
 from __future__ import absolute_import, print_function, division
 import os
-import numpy
+import numpy as np
 
 from theano import Op, Apply, config
 from six import StringIO
@@ -41,9 +41,6 @@ class GpuCrossentropySoftmaxArgmax1HotWithBias(GpuKernelBase, Op):
         sm = x.type()
         am = y_idx.type()
         return Apply(self, [x, b, y_idx], [nll, sm, am])
-
-    def get_params(self, node):
-        return node.inputs[0].type.context
 
     def c_headers(self):
         return ['<numpy_compat.h>', '<gpuarray/types.h>', 'gpuarray_helper.h']
@@ -195,13 +192,13 @@ class GpuCrossentropySoftmaxArgmax1HotWithBias(GpuKernelBase, Op):
     def c_code(self, node, nodename, inp, out, sub):
         if node.inputs[0].type.context.kind != b'cuda':
             raise NotImplementedError('cuda only')
-        itemsize_x = numpy.dtype(node.inputs[0].dtype).itemsize
-        worksize_x = numpy.dtype(work_dtype(node.inputs[0].dtype)).itemsize
-        itemsize_b = numpy.dtype(node.inputs[1].dtype).itemsize
-        itemsize_y_idx = numpy.dtype(node.inputs[2].dtype).itemsize
-        itemsize_nll = numpy.dtype(node.outputs[0].dtype).itemsize
-        itemsize_sm = numpy.dtype(node.outputs[1].dtype).itemsize
-        itemsize_am = numpy.dtype(node.outputs[2].dtype).itemsize
+        itemsize_x = np.dtype(node.inputs[0].dtype).itemsize
+        worksize_x = np.dtype(work_dtype(node.inputs[0].dtype)).itemsize
+        itemsize_b = np.dtype(node.inputs[1].dtype).itemsize
+        itemsize_y_idx = np.dtype(node.inputs[2].dtype).itemsize
+        itemsize_nll = np.dtype(node.outputs[0].dtype).itemsize
+        itemsize_sm = np.dtype(node.outputs[1].dtype).itemsize
+        itemsize_am = np.dtype(node.outputs[2].dtype).itemsize
         x, b, y_idx = inp
         nll, sm, am = out
         fail = sub['fail']
@@ -294,9 +291,6 @@ class GpuCrossentropySoftmax1HotWithBiasDx(GpuKernelBase, Op):
         y_idx = as_gpuarray_variable(y_idx, ctx_name)
         return Apply(self, [dnll, sm, y_idx], [sm.type()])
 
-    def get_params(self, node):
-        return node.inputs[0].type.context
-
     def c_code_cache_version(self):
         return (12,)
 
@@ -307,15 +301,15 @@ class GpuCrossentropySoftmax1HotWithBiasDx(GpuKernelBase, Op):
         if node.inputs[0].type.context.kind != b'cuda':
             raise NotImplementedError("cuda only")
         typecode_dx = pygpu.gpuarray.dtype_to_typecode(node.outputs[0].dtype)
-        itemsize_dnll = numpy.dtype(node.inputs[0].dtype).itemsize
-        itemsize_sm = numpy.dtype(node.inputs[1].dtype).itemsize
-        itemsize_y_idx = numpy.dtype(node.inputs[2].dtype).itemsize
-        itemsize_dx = numpy.dtype(node.outputs[0].dtype).itemsize
+        itemsize_dnll = np.dtype(node.inputs[0].dtype).itemsize
+        itemsize_sm = np.dtype(node.inputs[1].dtype).itemsize
+        itemsize_y_idx = np.dtype(node.inputs[2].dtype).itemsize
+        itemsize_dx = np.dtype(node.outputs[0].dtype).itemsize
         dtype_dnll = node.inputs[0].dtype
         dtype_sm = node.inputs[1].dtype
         dtype_y_idx = node.inputs[2].dtype
         dtype_dx = node.outputs[0].dtype
-        type_intp = gpuarray.dtype_to_ctype(numpy.intp)
+        type_intp = gpuarray.dtype_to_ctype(np.intp)
         dnll, sm, y_idx = inp
         dx, = out
         fail = sub['fail']
@@ -501,9 +495,6 @@ class GpuSoftmax(GpuKernelBase, Op):
         x = as_gpuarray_variable(x, infer_context_name(x))
         return Apply(self, [x], [x.type()])
 
-    def get_params(self, node):
-        return node.inputs[0].type.context
-
     def infer_shape(self, node, shape):
         return shape
 
@@ -519,8 +510,8 @@ class GpuSoftmax(GpuKernelBase, Op):
         dtype_x = node.inputs[0].dtype
         work_x = work_dtype(dtype_x)
         dtype_z = node.outputs[0].dtype
-        itemsize_x = numpy.dtype(dtype_x).itemsize
-        itemsize_z = numpy.dtype(dtype_z).itemsize
+        itemsize_x = np.dtype(dtype_x).itemsize
+        itemsize_z = np.dtype(dtype_z).itemsize
         typecode = pygpu.gpuarray.dtype_to_typecode(node.outputs[0].dtype)
         x, = inp
         z, = out
@@ -700,9 +691,6 @@ class GpuSoftmaxWithBias(GpuKernelBase, Op):
         b = as_gpuarray_variable(b, ctx_name)
         return Apply(self, [x, b], [x.type()])
 
-    def get_params(self, node):
-        return node.inputs[0].type.context
-
     def infer_shape(self, node, shape):
         return [shape[0]]
 
@@ -719,9 +707,9 @@ class GpuSoftmaxWithBias(GpuKernelBase, Op):
         dtype_b = node.inputs[1].dtype
         dtype_z = node.outputs[0].dtype
         work_x = work_dtype(dtype_x)
-        itemsize_x = numpy.dtype(dtype_x).itemsize
-        itemsize_b = numpy.dtype(dtype_b).itemsize
-        itemsize_z = numpy.dtype(dtype_z).itemsize
+        itemsize_x = np.dtype(dtype_x).itemsize
+        itemsize_b = np.dtype(dtype_b).itemsize
+        itemsize_z = np.dtype(dtype_z).itemsize
         typecode = pygpu.gpuarray.dtype_to_typecode(node.outputs[0].dtype)
         x, b = inp
         z, = out

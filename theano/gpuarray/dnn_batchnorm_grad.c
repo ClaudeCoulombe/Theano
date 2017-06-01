@@ -24,7 +24,7 @@ int dnn_batchnorm_grad(PyGpuArrayObject *inp, PyGpuArrayObject *doutp,
                        PyGpuArrayObject *scale, PyGpuArrayObject *x_mean,
                        PyGpuArrayObject *x_invstd, npy_float64 epsilon,
                        PyGpuArrayObject **dinp, PyGpuArrayObject **dscale,
-                       PyGpuArrayObject **dbias, cudnnHandle_t _handle) {
+                       PyGpuArrayObject **dbias, PARAMS_TYPE* params) {
   PyGpuContextObject *c = inp->context;
 
   if (c_set_tensorNd(inp, bn_input) != 0)
@@ -34,8 +34,10 @@ int dnn_batchnorm_grad(PyGpuArrayObject *inp, PyGpuArrayObject *doutp,
   if (c_set_tensorNd(scale, bn_params) != 0)
     return 1;
 
-  if (epsilon < 1e-5)
+  if (epsilon < 1e-5) {
+    PyErr_Format(PyExc_ValueError, "epsilon must be at least 1e-5, got %f", epsilon);
     return 1;
+  }
 
   if (theano_prep_output(dinp, inp->ga.nd, inp->ga.dimensions, inp->ga.typecode, GA_C_ORDER, c) != 0)
     return 1;
@@ -68,8 +70,8 @@ int dnn_batchnorm_grad(PyGpuArrayObject *inp, PyGpuArrayObject *doutp,
       betaParam = (void *)&fbeta;
     }
     cudnnStatus_t err = cudnnBatchNormalizationBackward(
-      _handle,
-      MODE,
+      params->handle,
+      params->mode,
       alphaData,
       betaData,
       alphaParam,

@@ -8,7 +8,8 @@ if theano.gpuarray.pygpu is None:
     raise SkipTest("pygpu not installed")
 
 if (not theano.gpuarray.pygpu_activated and
-        not theano.config.init_gpu_device.startswith('gpu')):
+        not theano.config.init_gpu_device.startswith('gpu') and
+        not theano.config.force_device):
     theano.gpuarray.init_dev('cuda')
 
 if not theano.gpuarray.pygpu_activated:
@@ -22,6 +23,7 @@ if theano.config.mode == 'FAST_COMPILE':
 else:
     mode_with_gpu = theano.compile.mode.get_default_mode().including('gpuarray').excluding('gpu')
     mode_without_gpu = theano.compile.mode.get_default_mode().excluding('gpuarray')
+    mode_without_gpu.check_py_code = False
 
 
 # If using float16, cast reference input to float32

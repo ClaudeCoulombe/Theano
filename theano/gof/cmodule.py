@@ -20,7 +20,7 @@ import platform
 import distutils.sysconfig
 import warnings
 
-import numpy.distutils  # TODO: TensorType should handle this
+import numpy.distutils
 
 import theano
 from theano.compat import PY3, decode, decode_iter
@@ -337,7 +337,11 @@ def module_name_from_dir(dirname, err=True, files=None):
 
     """
     if files is None:
-        files = os.listdir(dirname)
+        try:
+            files = os.listdir(dirname)
+        except OSError as e:
+            if e.errno == 2 and not err:  # No such file or directory
+                return None
     names = [file for file in files
              if file.endswith('.so') or file.endswith('.pyd')]
     if len(names) == 0 and not err:
@@ -746,6 +750,9 @@ class ModuleCache(object):
             if subdirs_elem == 'lock_dir':
                 continue
             root = os.path.join(self.dirname, subdirs_elem)
+            # Don't delete the gpuarray kernel cache
+            if root == config.gpuarray.cache_path:
+                continue
             key_pkl = os.path.join(root, 'key.pkl')
             if key_pkl in self.loaded_key_pkl:
                 continue
@@ -792,12 +799,6 @@ class ModuleCache(object):
                                msg='broken cache directory [EOF]',
                                level=logging.WARNING)
                         continue
-                    except ValueError:
-                        # This can happen when we have bad config value
-                        # in the cuda.nvcc_compiler.py file.
-                        # We should not hide it here, as this will cause
-                        # an unrelated error to appear.
-                        raise
                     except Exception:
                         unpickle_failure()
                         if delete_if_problem:
@@ -1319,7 +1320,7 @@ class ModuleCache(object):
             to -1 in order to delete all unversioned cached modules regardless
             of their age.
         clear_base_files : bool
-            If True, then delete base directories 'cuda_ndarray', 'cutils_ext',
+            If True, then delete base directories 'cutils_ext',
             'lazylinker_ext' and 'scan_perform' if they are present.
             If False, those directories are left intact.
         delete_if_problem
@@ -1336,8 +1337,8 @@ class ModuleCache(object):
 
     def clear_base_files(self):
         """
-        Remove base directories 'cuda_ndarray', 'cutils_ext', 'lazylinker_ext'
-        and 'scan_perform' if present.
+        Remove base directories 'cutils_ext', 'lazylinker_ext' and
+        'scan_perform' if present.
 
         Note that we do not delete them outright because it may not work on
         some systems due to these modules being currently in use. Instead we
@@ -1346,8 +1347,7 @@ class ModuleCache(object):
 
         """
         with compilelock.lock_ctx():
-            for base_dir in ('cuda_ndarray', 'cutils_ext', 'lazylinker_ext',
-                             'scan_perform'):
+            for base_dir in ('cutils_ext', 'lazylinker_ext', 'scan_perform'):
                 to_delete = os.path.join(self.dirname, base_dir + '.delete.me')
                 if os.path.isdir(to_delete):
                     try:
@@ -1443,7 +1443,15 @@ class ModuleCache(object):
                     # If it don't exist, use any file in the directory.
                     if path is None:
                         path = os.path.join(self.dirname, filename)
-                        files = os.listdir(path)
+                        try:
+                            files = os.listdir(path)
+                        except OSError as e:
+                            if e.errno == 2:  # No such file or directory
+                                # if it don't exist anymore, it mean
+                                # the clean up was already done by
+                                # someone else, so nothing to do about
+                                # it.
+                                continue
                         if files:
                             path = os.path.join(path, files[0])
                         else:
@@ -1787,7 +1795,7 @@ class Compiler(object):
             if err is None:
                 err = str(e)
             else:
-                err += "\n" + str(e)
+                err = str(err) + "\n" + str(e)
             compilation_ok = False
 
         if not try_run and not output:
@@ -1885,11 +1893,6 @@ class GCC_compiler(Compiler):
             for f in cxxflags:
                 # If the user give an -march=X parameter, don't add one ourself
                 if ((f.startswith("--march=") or f.startswith("-march="))):
-                    _logger.warn(
-                        "WARNING: your Theano flags `gcc.cxxflags` specify"
-                        " an `-march=X` flags.\n"
-                        "         It is better to let Theano/g++ find it"
-                        " automatically, but we don't do it now")
                     detect_march = False
                     GCC_compiler.march_flags = []
                     break
@@ -2271,8 +2274,8 @@ class GCC_compiler(Compiler):
             # improved loading times on most platforms (win32 is
             # different, as usual).
             cmd.append('-fvisibility=hidden')
-        cmd.extend(['-o', lib_filename])
-        cmd.append(cppfilename)
+        cmd.extend(['-o', '%s%s%s' % (path_wrapper, lib_filename, path_wrapper)])
+        cmd.append('%s%s%s' % (path_wrapper, cppfilename, path_wrapper))
         cmd.extend(['-l%s' % l for l in libs])
         # print >> sys.stderr, 'COMPILING W CMD', cmd
         _logger.debug('Running cmd: %s', ' '.join(cmd))
@@ -2294,14 +2297,37 @@ class GCC_compiler(Compiler):
         status = p_out[2]
 
         if status:
-            print('===============================')
+            tf = tempfile.NamedTemporaryFile(
+                mode='w',
+                prefix='theano_compilation_error_',
+                delete=False
+            )
+            # gcc put its messages to stderr, so we add ours now
+            tf.write('===============================\n')
             for i, l in enumerate(src_code.split('\n')):
-                # gcc put its messages to stderr, so we add ours now
-                print('%05i\t%s' % (i + 1, l), file=sys.stderr)
-            print('===============================')
-            print_command_line_error()
+                tf.write('%05i\t%s\n' % (i + 1, l))
+            tf.write('===============================\n')
+            tf.write("Problem occurred during compilation with the "
+                     "command line below:\n")
+            tf.write(' '.join(cmd))
             # Print errors just below the command line.
-            print(compile_stderr)
+            tf.write(compile_stderr)
+            tf.close()
+            print('\nYou can find the C code in this temporary file: ' + tf.name)
+            not_found_libraries = re.findall('-l["."-_a-zA-Z0-9]*', compile_stderr)
+            for nf_lib in not_found_libraries:
+                print('library ' + nf_lib[2:] + ' is not found.')
+                if re.search('-lPYTHON["."0-9]*', nf_lib, re.IGNORECASE):
+                    py_string = re.search('-lpython["."0-9]*', nf_lib, re.IGNORECASE).group()[8:]
+                    if py_string != '':
+                        print(
+                            'Check if package python-dev ' + py_string + ' or python-devel ' + py_string + ' is installed.'
+                        )
+                    else:
+                        print(
+                            'Check if package python-dev or python-devel is installed.'
+                        )
+
             # We replace '\n' by '. ' in the error message because when Python
             # prints the exception, having '\n' in the text makes it more
             # difficult to read.

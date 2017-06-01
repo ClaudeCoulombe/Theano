@@ -9,7 +9,7 @@ from __future__ import absolute_import, print_function, division
 
 import inspect
 import logging
-import numpy
+import numpy as np
 import os
 import re
 import sys
@@ -19,7 +19,7 @@ import theano
 from theano import config
 
 import theano.gof.cc
-from six import itervalues
+from six import itervalues, PY3
 from theano.gof import graph
 from theano.gof import utils
 from theano.gof.cmodule import GCC_compiler
@@ -33,6 +33,17 @@ __contact__ = "theano-dev <theano-dev@googlegroups.com>"
 __docformat__ = "restructuredtext en"
 
 _logger = logging.getLogger('theano.gof.op.Op')
+
+
+# Open file in "universal newline mode".
+# In Python 2, this is done by calling open(..., 'U'), but this is
+# deprected in Python 3 (where we would need to pass "newline=None",
+# which is the default).
+if PY3:
+    _open_u = open
+else:
+    def _open_u(file):
+        return open(file, 'U')
 
 
 class CLinkerObject(object):
@@ -141,7 +152,7 @@ class CLinkerObject(object):
 
     def c_support_code(self):
         """
-        Optional: Return utility code for use by a `Variable` or `Op` to be
+        Optional: Return utility code (a string, or a list of strings) for use by a `Variable` or `Op` to be
         included at global scope prior to the rest of the code for this class.
 
         QUESTION: How many times will this support code be emitted for a graph
@@ -784,6 +795,20 @@ class Op(utils.object2, PureOp, CLinkerOp):
     Convenience class to bundle `PureOp` and `CLinkerOp`.
 
     """
+
+    # We add a default get_params() implementation which will try to detect params from the op
+    # if params_type is set to a ParamsType. If not, we raise a MethodNotDefined exception.
+    def get_params(self, node):
+        if hasattr(self, 'params_type') and isinstance(self.params_type, theano.gof.ParamsType):
+            wrapper = self.params_type
+            if not all(hasattr(self, field) for field in wrapper.fields):
+                # Let's print missing attributes for debugging.
+                not_found = tuple(field for field in wrapper.fields if not hasattr(self, field))
+                raise AttributeError('%s: missing attributes %s for ParamsType.' % (type(self).__name__, not_found))
+            # ParamsType.get_params() will apply filtering to attributes.
+            return self.params_type.get_params(self)
+        raise theano.gof.utils.MethodNotDefined('get_params')
+
     def prepare_node(self, node, storage_map, compute_map, impl):
         """
         Make any special modifications that the Op needs before doing
@@ -1216,8 +1241,8 @@ def apply_meth(tag):
             code = self.code_sections[tag]
 
             define_macros, undef_macros = self.get_c_macros(node, name)
-            return os.linesep.join(['', define_macros, code,
-                                    undef_macros])
+            return '\n'.join(['', define_macros, code,
+                              undef_macros])
         else:
             raise utils.MethodNotDefined(
                 'c_' + tag, type(self), type(self).__name__)
@@ -1296,7 +1321,8 @@ class COp(Op):
         func_files = [self.get_path(f) for f in func_files]
         self.func_codes = []
         for func_file in func_files:
-            with open(func_file, 'r') as f:
+            # U (universal) will convert all new lines format to \n.
+            with _open_u(func_file) as f:
                 self.func_codes.append(f.read())
 
         # If both the old section markers and the new section markers are
@@ -1365,11 +1391,32 @@ class COp(Op):
         The names must be strings that are not a C keyword and the
         values must be strings of literal C representations.
 
+        If op uses a :class:`theano.gof.params_type.ParamsType` as ``params_type``,
+        it returns:
+         - a default macro ``PARAMS_TYPE`` which defines the class name of the
+           corresponding C struct.
+         - a macro ``DTYPE_PARAM_key`` for every ``key`` in the ParamsType for which associated
+           type implements the method :func:`theano.gof.type.CLinkerType.c_element_type`.
+           ``DTYPE_PARAM_key`` defines the primitive C type name of an item in a variable
+           associated to ``key``.
+
         """
+        if hasattr(self, 'params_type') and isinstance(self.params_type, theano.gof.ParamsType):
+            wrapper = self.params_type
+            params = [('PARAMS_TYPE', wrapper.name)]
+            for i in range(wrapper.length):
+                try:
+                    params.append(('DTYPE_PARAM_' + wrapper.fields[i], wrapper.types[i].c_element_type()))
+                except utils.MethodNotDefined:
+                    pass
+            return params
         return []
 
     def c_code_cache_version(self):
-        return hash(tuple(self.func_codes))
+        version = (hash(tuple(self.func_codes)), )
+        if hasattr(self, 'params_type'):
+            version += (self.params_type.c_code_cache_version(), )
+        return version
 
     def c_init_code(self):
         """
@@ -1430,7 +1477,7 @@ class COp(Op):
                     (macro_name, macro_value))
                 undef_macros.append(undef_template % macro_name)
 
-                d = numpy.dtype(v.dtype)
+                d = np.dtype(v.dtype)
 
                 macro_name = "TYPENUM_" + vname
                 macro_value = d.num
@@ -1457,7 +1504,7 @@ class COp(Op):
             define_macros.append(define_template % (n, v))
             undef_macros.append(undef_template % (n,))
 
-        return os.linesep.join(define_macros), os.linesep.join(undef_macros)
+        return '\n'.join(define_macros), '\n'.join(undef_macros)
 
     def _lquote_macro(self, txt):
         res = []
@@ -1465,7 +1512,7 @@ class COp(Op):
         for l in spl[:-1]:
             res.append(l + ' \\')
         res.append(spl[-1])
-        return os.linesep.join(res)
+        return '\n'.join(res)
 
     def get_sub_macros(self, sub):
         define_macros = []
@@ -1477,7 +1524,7 @@ class COp(Op):
             define_macros.append("#define PARAMS %s" % (sub['params'],))
             undef_macros.append("#undef PARAMS")
 
-        return os.linesep.join(define_macros), os.linesep.join(undef_macros)
+        return '\n'.join(define_macros), '\n'.join(undef_macros)
 
     def get_io_macros(self, inputs, outputs):
         define_macros = []
@@ -1502,9 +1549,9 @@ class COp(Op):
             def_macros, undef_macros = self.get_c_macros(node, name)
             def_sub, undef_sub = self.get_sub_macros(sub)
 
-            return os.linesep.join(['', def_macros, def_sub,
-                                    op_code,
-                                    undef_sub, undef_macros])
+            return '\n'.join(['', def_macros, def_sub,
+                              op_code,
+                              undef_sub, undef_macros])
         else:
             raise utils.MethodNotDefined(
                 'c_init_code_struct', type(self), type(self).__name__)
@@ -1542,9 +1589,9 @@ class COp(Op):
                 def_sub, undef_sub = self.get_sub_macros(sub)
                 def_io, undef_io = self.get_io_macros(inp, out)
 
-                return os.linesep.join([def_macros, def_sub, def_io,
-                                        op_code,
-                                        undef_io, undef_sub, undef_macros])
+                return '\n'.join([def_macros, def_sub, def_io,
+                                  op_code,
+                                  undef_io, undef_sub, undef_macros])
             else:
                 raise utils.MethodNotDefined(
                     'c_code', type(self), type(self).__name__)
@@ -1560,9 +1607,9 @@ class COp(Op):
             def_sub, undef_sub = self.get_sub_macros(sub)
             def_io, undef_io = self.get_io_macros(inputs, outputs)
 
-            return os.linesep.join([def_macros, def_sub, def_io,
-                                    op_code,
-                                    undef_io, undef_sub, undef_macros])
+            return '\n'.join([def_macros, def_sub, def_io,
+                              op_code,
+                              undef_io, undef_sub, undef_macros])
         else:
             raise utils.MethodNotDefined(
                 'c_code_cleanup', type(self), type(self).__name__)

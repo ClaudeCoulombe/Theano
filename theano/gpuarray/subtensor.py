@@ -2,7 +2,7 @@ from __future__ import absolute_import, print_function, division
 
 import os
 
-import numpy
+import numpy as np
 from six import integer_types
 from six.moves import StringIO
 
@@ -19,8 +19,7 @@ except ImportError:
 
 from .type import GpuArrayType, gpu_context_type
 from .basic_ops import (as_gpuarray_variable, HideC, GpuKernelBase, Kernel,
-                        infer_context_name)
-
+                        infer_context_name, gpu_contiguous)
 
 iadd_reg = {}
 
@@ -128,7 +127,7 @@ class GpuSubtensor(HideC, Subtensor):
         def fix_idx(idx):
             if idx is None:
                 return "0", 1
-            elif isinstance(idx, (numpy.integer, integer_types)):
+            elif isinstance(idx, (np.integer, integer_types)):
                 return str(idx), 0
             elif isinstance(idx, gof.Type):
                 return indices.pop(0), 0
@@ -155,7 +154,7 @@ class GpuSubtensor(HideC, Subtensor):
             else:
                 if isinstance(idx, gof.Type):
                     start = indices.pop(0)
-                elif isinstance(idx, (numpy.integer, integer_types)):
+                elif isinstance(idx, (np.integer, integer_types)):
                     start = idx
                 else:
                     assert 0, idx
@@ -300,8 +299,9 @@ class GpuIncSubtensor(IncSubtensor):
         size_t dims[%(view_ndim)s];
         for(int i=0; i<%(view_ndim)s; i++)
             dims[i] = xview_dims[i];
+
         zview = pygpu_fromgpudata(%(x)s->ga.data,
-                                  xview_offset,
+                                  %(x)s->ga.offset + xview_offset,
                                   %(x)s->ga.typecode,
                                   %(view_ndim)s,
                                   dims,
@@ -396,7 +396,7 @@ int sub_setarray(GpuArray *dst, GpuArray *src) {
         parent_version = super(GpuIncSubtensor, self).c_code_cache_version()
         if not parent_version:
             return
-        return parent_version + (8,)
+        return parent_version + (9,)
 
 
 class GpuAdvancedSubtensor1(HideC, tensor.AdvancedSubtensor1):
@@ -413,7 +413,7 @@ class GpuAdvancedSubtensor1(HideC, tensor.AdvancedSubtensor1):
         if ilist__.type.dtype != 'int64':
             ilist__ = tensor.cast(ilist__, 'int64')
 
-        ilist_ = as_gpuarray_variable(ilist__, ctx_name)
+        ilist_ = gpu_contiguous(as_gpuarray_variable(ilist__, ctx_name))
 
         if ilist_.type.dtype != 'int64':
             raise TypeError('index must be int64')
@@ -511,7 +511,7 @@ class GpuAdvancedSubtensor(HideC, tensor.AdvancedSubtensor):
         # if there are more than one (narray > 1) it should be ignored.
         ap = 0
         for k, i in enumerate(list(nidx)):
-            if (isinstance(i, numpy.ndarray) and
+            if (isinstance(i, np.ndarray) and
                     i.ndim != 0):
                 transp.remove(k)
                 transp.insert(p, k)
@@ -544,15 +544,22 @@ class GpuAdvancedSubtensor(HideC, tensor.AdvancedSubtensor):
         idx_ = ([slice(None)] * p + nidx[p:])
         x = x.__getitem__(idx_)
 
+        if p == 0:
+            # The only indexing was through slices and indices.
+            # This can happen with symbolic slices for instance.
+            # Since no view_map is set, we need to copy the returned value
+            out[0] = x.copy()
+            return
+
         # flatten the array-indexed dimensions
-        shape = ((numpy.prod(x.shape[0: p]),) +
+        shape = ((np.prod(x.shape[0: p]),) +
                  x.shape[p:])
         input_flat = x.reshape(shape)
 
         # build the strides
         strides = [1]
         for i in range(p - 1, 0, -1):
-            stride = x.shape[i] * strides[-1]
+            stride = x.shape[i] * strides[0]
             strides.insert(0, stride)
 
         # build the indices and use it
@@ -644,7 +651,7 @@ class GpuAdvancedIncSubtensor1(Op):
         # content to index x and y (This is because we serve as
         # fallback for _dev20).
         if isinstance(idx, gpuarray.GpuArray):
-            idx = numpy.asarray(idx)
+            idx = np.asarray(idx)
 
         # If `y` has as many dimensions as `x`, then we want to iterate
         # jointly on `x` and `y`. Otherwise, it means `y` should be
@@ -877,10 +884,10 @@ if (GpuArray_vector_add_fast(%(out)s, %(y)s, %(ind)s, %(set_instead_of_inc)s)) {
         dtype_y = node.inputs[1].dtype
         dtype_ind = node.inputs[2].dtype
         dtype_out = node.outputs[0].dtype
-        itemsize_x = numpy.dtype(dtype_x).itemsize
-        itemsize_y = numpy.dtype(dtype_y).itemsize
-        itemsize_ind = numpy.dtype(dtype_ind).itemsize
-        itemsize_out = numpy.dtype(dtype_out).itemsize
+        itemsize_x = np.dtype(dtype_x).itemsize
+        itemsize_y = np.dtype(dtype_y).itemsize
+        itemsize_ind = np.dtype(dtype_ind).itemsize
+        itemsize_out = np.dtype(dtype_out).itemsize
         flags = Kernel.get_flags(dtype_x, dtype_y, dtype_ind)
         type_x = gpuarray.dtype_to_ctype(dtype_x)
         type_y = gpuarray.dtype_to_ctype(dtype_y)
@@ -1007,10 +1014,10 @@ __device__ ga_half atomicExch(ga_half *addr, ga_half val) {
         dtype_y = node.inputs[1].dtype
         dtype_ind = node.inputs[2].dtype
         dtype_out = node.outputs[0].dtype
-        itemsize_x = numpy.dtype(dtype_x).itemsize
-        itemsize_y = numpy.dtype(dtype_y).itemsize
-        itemsize_ind = numpy.dtype(dtype_ind).itemsize
-        itemsize_out = numpy.dtype(dtype_out).itemsize
+        itemsize_x = np.dtype(dtype_x).itemsize
+        itemsize_y = np.dtype(dtype_y).itemsize
+        itemsize_ind = np.dtype(dtype_ind).itemsize
+        itemsize_out = np.dtype(dtype_out).itemsize
         k_var = "k_vector_add_fast_" + nodename
 
         return super(GpuAdvancedIncSubtensor1_dev20, self).c_support_code_struct(node, nodename) + """
@@ -1079,7 +1086,7 @@ __device__ ga_half atomicExch(ga_half *addr, ga_half val) {
         """ % locals()
 
 
-class GpuDiagonal(Subtensor):
+class GpuExtractDiag(Op):
     __props__ = ("offset", "axis1", "axis2", "view")
 
     def __init__(self, offset=0, axis1=0, axis2=1, view=False):
@@ -1101,9 +1108,7 @@ class GpuDiagonal(Subtensor):
         broadcastable = x.broadcastable[:axis_small] + \
             x.broadcastable[axis_small + 1:axis_large] + \
             x.broadcastable[axis_large + 1:] + (False,)
-        return gof.Apply(self, [x], [x.type.__class__(
-            dtype=x.dtype,
-            broadcastable=broadcastable)()])
+        return gof.Apply(self, [x], [x.type.clone(broadcastable=broadcastable)()])
 
     def perform(self, node, inputs, outputs):
         (x,) = inputs
@@ -1112,7 +1117,7 @@ class GpuDiagonal(Subtensor):
         if x.size == 0:
             out_shape = [d for i, d in enumerate(x.shape)
                          if i not in (self.axis1, self.axis2)]
-            diag_size = numpy.min((x.shape[self.axis1], x.shape[self.axis2]))
+            diag_size = np.min((x.shape[self.axis1], x.shape[self.axis2]))
             out_shape.append(diag_size)
             z[0] = node.outputs[0].type.value_zeros(tuple(out_shape))
             return
@@ -1128,15 +1133,15 @@ class GpuDiagonal(Subtensor):
 
         if x.shape[stride_axis] < x.shape[slice_axis]:
             # in the bigger triangle
-            numstride = small_axis - numpy.max((
-                0, small_axis + numpy.abs(self.offset) - large_axis))
+            numstride = small_axis - np.max((
+                0, small_axis + np.abs(self.offset) - large_axis))
         else:
             # in the smaller triangle
-            numstride = small_axis - numpy.abs(self.offset)
+            numstride = small_axis - np.abs(self.offset)
 
-        slicer = [numpy.s_[:], ] * x.ndim
-        slicer[stride_axis] = numpy.s_[:numstride]
-        slicer[slice_axis] = numpy.abs(self.offset)
+        slicer = [np.s_[:], ] * x.ndim
+        slicer[stride_axis] = np.s_[:numstride]
+        slicer[slice_axis] = np.abs(self.offset)
         slicer = tuple(slicer)
 
         # step 2) Swap stride_axis to the last dim because we want the dim on
@@ -1144,7 +1149,7 @@ class GpuDiagonal(Subtensor):
         # This is also in consistence with the interface of numpy.diagonal.
         if slice_axis < stride_axis:
             stride_axis -= 1
-        new_dim_order = range(x[slicer].ndim)
+        new_dim_order = list(range(x[slicer].ndim))
         new_dim_order = tuple(new_dim_order[:stride_axis] +
                               new_dim_order[stride_axis + 1:] +
                               [stride_axis, ])
@@ -1182,3 +1187,42 @@ class GpuDiagonal(Subtensor):
             diag_size = T.minimum(dim1, dim2)
         out_shape.append(diag_size)
         return [tuple(out_shape)]
+
+
+class GpuAllocDiag(Op):
+    __props__ = ("offset",)
+
+    def __init__(self, offset=0):
+        self.offset = offset
+
+    def make_node(self, _x):
+        ctx_name = infer_context_name(_x)
+        x = as_gpuarray_variable(_x, ctx_name)
+
+        if x.ndim != 1:
+            raise ValueError('AllocDiag argument must be a vector!', x)
+
+        return gof.Apply(self, [x], [x.type.clone(broadcastable=(False, False))()])
+
+    def perform(self, node, inputs, outputs):
+        (x,) = inputs
+        (z,) = outputs
+
+        dim = x.shape[0] + abs(self.offset)
+        z[0] = gpuarray.zeros((dim, dim), dtype=x.dtype, context=x.context)
+
+        if self.offset <= 0:  # diag in the lower triangle
+            diag_z = z[0][-self.offset, :(dim + self.offset)]
+        else:  # diag in the upper triangle
+            diag_z = z[0][:(dim - self.offset), self.offset]
+        diag_z.strides = (sum(z[0].strides),)
+
+        diag_z[:] = x[:]
+
+    def grad(self, inputs, gout):
+        (gz,) = gout
+        return [GpuExtractDiag(offset=self.offset, axis1=0, axis2=1)(gz)]
+
+    def infer_shape(self, node, shapes):
+        dim = shapes[0][0] + abs(self.offset)
+        return [[dim, dim]]

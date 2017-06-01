@@ -1,5 +1,5 @@
 from __future__ import absolute_import, print_function, division
-import numpy
+import numpy as np
 
 from theano import Op, Apply, config
 from theano.tensor.nnet.neighbours import Images2Neibs
@@ -45,9 +45,6 @@ class GpuImages2Neibs(GpuKernelBase, Images2Neibs, Op):
                      [GpuArrayType(broadcastable=(False, False),
                                    dtype=ten4.type.dtype,
                                    context_name=ten4.type.context_name)()])
-
-    def get_params(self, node):
-        return node.inputs[0].type.context
 
     def c_code_cache_version(self):
         return (11,)
@@ -256,8 +253,8 @@ class GpuImages2Neibs(GpuKernelBase, Images2Neibs, Op):
         dtype_neib_shape = node.inputs[1].dtype
         dtype_neib_step = node.inputs[2].dtype
         dtype_z = node.outputs[0].dtype
-        itemsize_ten4 = numpy.dtype(dtype_ten4).itemsize
-        itemsize_z = numpy.dtype(dtype_z).itemsize
+        itemsize_ten4 = np.dtype(dtype_ten4).itemsize
+        itemsize_z = np.dtype(dtype_z).itemsize
         typecode_z = pygpu.gpuarray.dtype_to_typecode(node.outputs[0].dtype)
         ten4, neib_shape, neib_step = inp
         z, = out

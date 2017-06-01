@@ -10,7 +10,6 @@ from __future__ import absolute_import, print_function, division
 from . import link
 from collections import defaultdict
 import logging
-import os
 import sys
 import time
 import warnings
@@ -208,6 +207,7 @@ class VM(object):
         if hasattr(self, 'variable_shape'):
             profile.variable_shape = self.variable_shape.copy()
             profile.variable_strides = self.variable_strides.copy()
+            profile.variable_offset = self.variable_offset.copy()
 
         if hasattr(self, 'node_executed_order'):
             profile.node_executed_order = self.node_executed_order[:]
@@ -343,6 +343,7 @@ class Stack(VM):
         self.storage_map = storage_map
         self.variable_shape = {}  # Variable -> shape
         self.variable_strides = {}  # Variable -> strides
+        self.variable_offset = {}  # Variable -> offset
         self.compute_map = compute_map
         self.node_idx = node_idx = {}
         self.callback = callback
@@ -437,15 +438,17 @@ class Stack(VM):
             if hasattr(var.type, 'get_shape_info'):
                 sh = var.type.get_shape_info(data[0])
             else:
-                sh = 'input no shape'
+                sh = 'no shape'
             self.variable_shape[var] = sh
-            st = getattr(data[0], 'strides', 'input no strides')
+            st = getattr(data[0], 'strides', 'no strides')
             if getattr(data[0], 'flags', False) and data[0].flags.c_contiguous:
                 st = 'c'
             elif (hasattr(data[0], 'is_c_contiguous') and
                   data[0].is_c_contiguous()):
                 st = "c"
             self.variable_strides[var] = st
+            off = getattr(data[0], 'offset', '')
+            self.variable_offset[var] = off
 
         while apply_stack:
             # Make sure something happened last time round.  This is
@@ -482,7 +485,7 @@ class Stack(VM):
                     try:
                         _, dt = self.run_thunk_of_node(current_apply)
                         del _
-                        if config.profile:
+                        if config.profile or config.print_global_stats:
                             current_idx = self.node_idx[current_apply]
                             self.call_counts[current_idx] += 1
                             self.call_times[current_idx] += dt
@@ -496,17 +499,19 @@ class Stack(VM):
                                 if hasattr(var.type, 'get_shape_info'):
                                     sh = var.type.get_shape_info(o[0])
                                 else:
-                                    sh = 'input no shape'
+                                    sh = 'no shape'
                                 self.variable_shape[var] = sh
                                 st = getattr(o[0], 'strides',
-                                             'input no strides')
+                                             'no strides')
                                 if (getattr(o[0], 'flags', False) and
                                         o[0].flags.c_contiguous):
                                     st = 'c'
-                                elif (hasattr(data[0], 'is_c_contiguous') and
-                                      data[0].is_c_contiguous()):
+                                elif (hasattr(o[0], 'is_c_contiguous') and
+                                      o[0].is_c_contiguous()):
                                     st = "c"
                                 self.variable_strides[var] = st
+                                off = getattr(o[0], 'offset', '')
+                                self.variable_offset[var] = off
                     except Exception:
                         link.raise_with_op(
                             current_apply,
@@ -596,7 +601,7 @@ class Stack(VM):
                         if current_apply.inputs[r].owner:
                             apply_stack.append(current_apply.inputs[r].owner)
                 else:
-                    if config.profile:
+                    if config.profile or config.print_global_stats:
                         for (idx, o) in enumerate(thunks[
                                 self.node_idx[current_apply]].outputs):
                             var = self.nodes[
@@ -605,16 +610,18 @@ class Stack(VM):
                             if hasattr(var.type, 'get_shape_info'):
                                 sh = var.type.get_shape_info(o[0])
                             else:
-                                sh = 'input no shape'
+                                sh = 'no shape'
                             self.variable_shape[var] = sh
-                            st = getattr(o[0], 'strides', 'input no strides')
+                            st = getattr(o[0], 'strides', 'no strides')
                             if (getattr(o[0], 'flags', False) and
                                     o[0].flags.c_contiguous):
                                 st = 'c'
-                            elif (hasattr(data[0], 'is_c_contiguous') and
-                                  data[0].is_c_contiguous()):
+                            elif (hasattr(o[0], 'is_c_contiguous') and
+                                  o[0].is_c_contiguous()):
                                 st = "c"
                             self.variable_strides[var] = st
+                            off = getattr(o[0], 'offset', '')
+                            self.variable_offset[var] = off
 
                     input_index = []
 
@@ -757,21 +764,6 @@ class VM_Linker(link.LocalLinker):
         associated to self, else, a new VM_Linker associated to fgraph.
 
         """
-        if (config.profile and
-                ((hasattr(theano, 'sandbox') and
-                  hasattr(theano.sandbox, 'cuda') and
-                  theano.sandbox.cuda.cuda_enabled) or
-                 (hasattr(theano, 'gpuarray') and
-                  theano.gpuarray.pygpu_activated))):
-            if os.environ.get('CUDA_LAUNCH_BLOCKING', '0') != '1':
-                raise Exception(
-                    "You are running the Theano profiler with CUDA enabled."
-                    " Theano GPU ops execution is asynchronous by default."
-                    " So by default, the profile is useless."
-                    " You must set the environment variable"
-                    " CUDA_LAUNCH_BLOCKING to 1 to tell the CUDA driver to"
-                    " synchronize the execution to get a meaningful profile.")
-
         if no_recycling is None:
             no_recycling = []
         if self.fgraph is not None and self.fgraph is not fgraph:
@@ -856,7 +848,7 @@ class VM_Linker(link.LocalLinker):
         pre_call_clear = [storage_map[v] for v in self.no_recycling]
 
         if (self.callback is not None or self.callback_input is not None or
-                (config.profile and config.profile_memory) or
+                ((config.profile or config.print_global_stats) and config.profile_memory) or
                 (self.allow_partial_eval and not self.use_cloop)):
 
             if self.use_cloop and (self.callback is not None or
@@ -1086,7 +1078,7 @@ class VM_Linker(link.LocalLinker):
             lazy = config.vm.lazy
         if lazy is None:
             lazy = not all([(not th.lazy) for th in thunks])
-        if not (lazy or (config.profile and config.profile_memory) or
+        if not (lazy or ((config.profile or config.print_global_stats) and config.profile_memory) or
                 self.use_cloop or self.callback or self.callback_input):
             for pair in itervalues(reallocated_info):
                 storage_map[pair[1]] = storage_map[pair[0]]
