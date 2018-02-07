@@ -109,7 +109,7 @@ import theano and print the config variable, as in:
 
     Default device for computations. If ``'cuda*``, change the default to try
     to move computation to the GPU using CUDA libraries. If ``'opencl*'``,
-    the openCL libraries will be used. To let the driver select the device,
+    the OpenCL libraries will be used. To let the driver select the device,
     use ``'cuda'`` or ``'opencl'``. If we are not able to use the GPU,
     either we fall back on the CPU, or an error is raised, depending
     on the :attr:`force_device` flag.
@@ -179,6 +179,19 @@ import theano and print the config variable, as in:
     When creating a TensorVariable with dtype float64, what should be done?
     This is useful to help find upcast to float64 in user code.
 
+.. attribute:: deterministic
+
+    String value: either ``'default'``, ``'more'``
+
+    Default: ``'default'``
+
+    If `more`, sometimes we will select some implementation that
+    are more deterministic, but slower. In particular, on the GPU,
+    we will avoid using AtomicAdd. Sometimes we will still use
+    non-deterministic implementaion, e.g. when we do not have a GPU
+    implementation that is deterministic. Also see the dnn.conv.algo*
+    flags to cover more cases.
+
 .. attribute:: allow_gc
 
     Bool value: either ``True`` or ``False``
@@ -193,6 +206,9 @@ import theano and print the config variable, as in:
     Theano by no longer spending time reallocating space. This gives
     significant speed up on functions with many ops that are fast to
     execute, but this increases Theano's memory usage.
+
+.. note:: if :attr:`config.gpuarray.preallocate` is the default value
+    or not disabled (-1), this is not useful anymore on the GPU.
 
 .. attribute:: config.scan.allow_output_prealloc
 
@@ -224,6 +240,35 @@ import theano and print the config variable, as in:
     Default: ``False``
 
     If True, we will print extra scan debug information.
+
+.. attribute:: cycle_detection
+
+    String value, either ``regular`` or ``fast```
+
+    Default: ``regular``
+
+    If :attr:`cycle_detection` is set to ``regular``, most inplaces are allowed,
+    but it is slower. If :attr:`cycle_detection` is set to ``faster``,
+    less inplaces are allowed, but it makes the compilation faster.
+
+    The interaction of which one give the lower peak memory usage is complicated and
+    not predictable, so if you are close to the peak memory usage, trying both
+    could give you a small gain.
+
+.. attribute:: check_stack_trace
+
+    String value, either ``off``, ``log``, ``warn``, ``raise``
+
+    Default: ``off``
+
+    This is a flag for checking the stack trace during the optimization process.
+    If :attr:`check_stack_trace` is set to ``off``, no check is performed on the
+    stack trace. If :attr:`check_stack_trace` is set to ``log`` or ``warn``, a
+    dummy stack trace is inserted that indicates which optimization inserted the
+    variable that had an empty stack trace but, in ``warn`` a warning is also
+    printed.
+    If :attr:`check_stack_trace` is set to ``raise``, an exception is raised if a
+    stack trace is missing.
 
 .. attribute:: openmp
 
@@ -414,19 +459,14 @@ import theano and print the config variable, as in:
 
     .. note::
 
-        This value allocates GPU memory ONLY when using (:ref:`gpuarray`).
-        For the old backend, please see ``config.lib.cnmem``
-
-    .. note::
-
         This could cause memory fragmentation. So if you have a memory
         error while using the cache, try to allocate more memory at
         the start or disable it. If you try this, report your result
-        on :ref`theano-dev`.
+        on `theano-dev`_.
 
     .. note::
 
-        The clipping at 95% can be bypassed by specifing the exact
+        The clipping at 95% can be bypassed by specifying the exact
         number of megabytes. If more then 95% are needed, it will try
         automatically to get more memory. But this can cause
         fragmentation, see note above.
@@ -526,7 +566,7 @@ import theano and print the config variable, as in:
 .. attribute:: config.warn.ignore_bug_before
 
     String value: ``'None'``, ``'all'``, ``'0.3'``, ``'0.4'``, ``'0.4.1'``, ``'0.5'``,
-    ``'0.6'``, ``'0.7'``, ``'0.8'``, ``'0.8.1'``, ``'0.8.2'``, ``'0.9'``, ``'0.10'``
+    ``'0.6'``, ``'0.7'``, ``'0.8'``, ``'0.8.1'``, ``'0.8.2'``, ``'0.9'``, ``'0.10'``, ``'1.0'``, ``'1.0.1'``
 
     Default: ``'0.8'``
 
@@ -622,6 +662,18 @@ import theano and print the config variable, as in:
 
     If ``'no_check'``, assume present and the version between header and library match (so less compilation at context init)",
 
+.. attribute:: config.dnn.include_path
+
+    Default: ``include`` sub-folder in CUDA root directory, or headers paths defined for the compiler.
+
+    Location of the cudnn header.
+
+.. attribute:: config.dnn.library_path
+
+    Default: Library sub-folder (``lib64`` on Linux) in CUDA root directory, or libraries paths defined for the compiler.
+
+    Location of the cudnn library.
+
 .. attribute:: config.conv.assert_shape
 
     If True, AbstractConv* ops will verify that user-provided
@@ -642,12 +694,12 @@ import theano and print the config variable, as in:
 
     String value:
     ``'small'``, ``'none'``, ``'large'``, ``'fft'``, ``'fft_tiling'``,
-    ``'winograd'``, ``'guess_once'``, ``'guess_on_shape_change'``,
+    ``'winograd'``, ``'winograd_non_fused'``, ``'guess_once'``, ``'guess_on_shape_change'``,
     ``'time_once'``, ``'time_on_shape_change'``.
 
     Default: ``'small'``
 
-    3d convolution only support ``'none'``, ``'winograd'``, ``'guess_once'``,
+    3d convolution only support ``'none'``, ``'small'``, ``'fft_tiling'``, ``'guess_once'``,
     ``'guess_on_shape_change'``, ``'time_once'``, ``'time_on_shape_change'``.
 
 .. attribute:: config.dnn.conv.algo_bwd
@@ -658,24 +710,24 @@ import theano and print the config variable, as in:
 .. attribute:: config.dnn.conv.algo_bwd_filter
 
     String value:
-    ``'none'``, ``'deterministic'``, ``'fft'``, ``'small'``, ``'guess_once'``,
+    ``'none'``, ``'deterministic'``, ``'fft'``, ``'small'``, ``'winograd_non_fused'``, ``'fft_tiling'``, ``'guess_once'``,
     ``'guess_on_shape_change'``, ``'time_once'``, ``'time_on_shape_change'``.
 
     Default: ``'none'``
 
-    3d convolution only supports ``'none'``, ``'guess_once'``,
+    3d convolution only supports ``'none'``, ``'small'``, ``'guess_once'``,
     ``'guess_on_shape_change'``, ``'time_once'``, ``'time_on_shape_change'``.
 
 .. attribute:: config.dnn.conv.algo_bwd_data
 
     String value:
     ``'none'``, ``'deterministic'``, ``'fft'``, ``'fft_tiling'``, ``'winograd'``,
-    ``'guess_once'``, ``'guess_on_shape_change'``, ``'time_once'``,
+    ``'winograd_non_fused'``, ``'guess_once'``, ``'guess_on_shape_change'``, ``'time_once'``,
     ``'time_on_shape_change'``.
 
     Default: ``'none'``
 
-    3d convolution only support ``'none'``, ``'winograd'``,
+    3d convolution only support ``'none'``, ``'deterministic'``, ``'fft_tiling'``
     ``'guess_once'``, ``'guess_on_shape_change'``, ``'time_once'``,
     ``'time_on_shape_change'``.
 
@@ -701,6 +753,14 @@ import theano and print the config variable, as in:
     Default: ``''``
 
     Location of the magma library.
+
+.. attribute:: config.ctc.root
+
+    Default: ``''``
+
+    Location of the warp-ctc folder. The folder should contain either a build,
+    lib or lib64 subfolder with the shared library (libwarpctc.so), and another
+    subfolder called include, with the CTC library header.
 
 .. attribute:: config.gcc.cxxflags
 
@@ -878,8 +938,8 @@ import theano and print the config variable, as in:
     one of the other ``config.numpy.seterr_*`` overrides it), but this behaviour
     can change between numpy releases.
 
-    This flag sets the default behaviour for all kinds of floating-pont
-    errors, and it can be overriden for specific errors by setting one
+    This flag sets the default behaviour for all kinds of floating-point
+    errors, and it can be overridden for specific errors by setting one
     (or more) of the flags below.
 
     This flag's value cannot be modified during the program execution.
@@ -1032,6 +1092,12 @@ import theano and print the config variable, as in:
     reused by Theano. Automatic deletion of those c module 7 days
     after that time.
 
+.. attribute:: config.cmodule.debug
+
+    Bool value, default: ``False``
+
+    If True, define a DEBUG macro (if not exists) for any compiled C code.
+
 .. attribute:: config.traceback.limit
 
     Int value, default: 8
@@ -1045,3 +1111,26 @@ import theano and print the config variable, as in:
     The number of user stack level to keep for variables during Theano
     compilation. If higher then 0, will make us keep Theano internal
     stack trace.
+
+.. attribute:: config.metaopt.verbose
+
+    Int value, default: 0
+
+    The verbosity level of the meta-optimizer. 0 for silent.
+    1 to only warn if we cannot meta-optimize some op.
+    2 for full output of separate timings and selected implementation
+
+
+.. attribute:: config.metaopt.optimizer_excluding
+
+    Default: ``""``
+
+    A list of optimizer tags that we don't want included in the Meta-optimizer.
+    If multiple tags, separate them by ':'.
+
+.. attribute:: config.metaopt.optimizer_including
+
+    Default: ``""``
+
+    A list of optimizer tags that we want included in the Meta-optimizer.
+    If multiple tags, separate them by ':'.

@@ -41,7 +41,7 @@ from theano.tensor import (
     inplace, iscalar, matrix, minimum, matrices, maximum, mul, neq,
     Reshape, row, scalar, scalars, second, smallest, stack, sub, Tensor,
     tensor_copy, tensordot, TensorType, Tri, tri, tril, triu, unbroadcast,
-    var, Join, shape, MaxAndArgmax, lscalar, zvector, exp,
+    var, Argmax, Join, shape, MaxAndArgmax, lscalar, zvector, exp,
     get_scalar_constant_value, ivector, reshape, scalar_from_tensor, scal,
     iscalars, arange, dscalars, fvector, imatrix, numeric_grad,
     opt, lvector, true_div, max, min, Split, roll,
@@ -57,7 +57,7 @@ from theano.tensor import (
 
 from theano.tests import unittest_tools as utt
 from theano.tests.unittest_tools import attr
-
+from theano import change_flags
 
 imported_scipy_special = False
 mode_no_scipy = get_default_mode()
@@ -106,8 +106,11 @@ def inplace_func(inputs, outputs, mode=None, allow_input_downcast=False,
                     name=name)
 
 
-def eval_outputs(outputs):
-    variables = inplace_func([], outputs)()
+def eval_outputs(outputs, ops=(), mode=None):
+    f = inplace_func([], outputs, mode=mode)
+    variables = f()
+    if ops:
+        assert any(isinstance(node.op, ops) for node in f.maker.fgraph.apply_nodes)
     if isinstance(variables, (tuple, list)) and len(variables) == 1:
         return variables[0]
     return variables
@@ -440,6 +443,7 @@ def makeTester(name, op, expected, checks=None, good=None, bad_build=None,
                 # instantiated on the following bad inputs: %s"
                 # % (self.op, testname, node, inputs))
 
+        @change_flags(compute_test_value='off')
         def test_bad_runtime(self):
             if skip:
                 raise SkipTest(skip)
@@ -807,6 +811,19 @@ MaximumInplaceTester = makeBroadcastTester(
     bad_build=_bad_build_broadcast_binary_normal,
     bad_runtime=_bad_runtime_broadcast_binary_normal,
     inplace=True)
+
+
+def test_maximum_minimum_grad():
+    # Test the discontinuity point.
+    # We decided that we only pass the gradient to the first input in that case.
+    x, y = tensor.vectors('xy')
+    for op in [tensor.maximum, tensor.minimum]:
+        o = op(x, y)
+        g = theano.grad(o.sum(), [x, y])
+
+        f = theano.function([x, y], g)
+        assert np.allclose(f([1], [1]), [[1], [0]])
+
 
 MinimumTester = makeBroadcastTester(
     op=minimum,
@@ -1238,7 +1255,8 @@ CeilTester = makeBroadcastTester(
 CeilInplaceTester = makeBroadcastTester(
     op=inplace.ceil_inplace,
     expected=upcast_float16_ufunc(np.ceil),
-    good=_good_broadcast_unary_normal_no_complex,
+    good=copymod(_good_broadcast_unary_normal_no_complex,
+                 without=['integers', 'int8', 'uint8', 'uint16']),
     # corner cases includes a lot of integers: points where Ceil is not
     # continuous (not differentiable)
     inplace=True)
@@ -1252,7 +1270,8 @@ FloorTester = makeBroadcastTester(
 FloorInplaceTester = makeBroadcastTester(
     op=inplace.floor_inplace,
     expected=upcast_float16_ufunc(np.floor),
-    good=_good_broadcast_unary_normal_no_complex,
+    good=copymod(_good_broadcast_unary_normal_no_complex,
+                 without=["integers", "int8", "uint8", "uint16"]),
     inplace=True)
 
 TruncInplaceTester = makeBroadcastTester(
@@ -1599,7 +1618,8 @@ Arctan2InplaceTester = makeBroadcastTester(
     op=inplace.arctan2_inplace,
     expected=np.arctan2,
     good=copymod(_good_broadcast_binary_arctan2,
-                 without=['integers', 'int8', 'uint8', 'uint16']),
+                 without=['integers', 'int8', 'uint8',
+                          'uint16', 'dtype_mixup_2']),
     inplace=True)
 
 CoshTester = makeBroadcastTester(
@@ -1706,6 +1726,7 @@ if imported_scipy_special:
     expected_gamma = scipy.special.gamma
     expected_gammaln = scipy.special.gammaln
     expected_psi = scipy.special.psi
+    expected_tri_gamma = partial(scipy.special.polygamma, 1)
     expected_chi2sf = scipy.stats.chi2.sf
     expected_j0 = scipy.special.j0
     expected_j1 = scipy.special.j1
@@ -1724,6 +1745,7 @@ else:
     expected_gamma = []
     expected_gammaln = []
     expected_psi = []
+    expected_tri_gamma = []
     expected_chi2sf = []
     expected_j0 = []
     expected_j1 = []
@@ -1773,14 +1795,16 @@ ErfcxTester = makeBroadcastTester(
     good=_good_broadcast_unary_normal_float_no_complex_small_neg_range,
     grad=_grad_broadcast_unary_normal_small_neg_range,
     eps=2e-10,
-    mode=mode_no_scipy)
+    mode=mode_no_scipy,
+    skip=skip_scipy)
 ErfcxInplaceTester = makeBroadcastTester(
     op=inplace.erfcx_inplace,
     expected=expected_erfcx,
     good=_good_broadcast_unary_normal_float_no_complex_small_neg_range,
     eps=2e-10,
     mode=mode_no_scipy,
-    inplace=True)
+    inplace=True,
+    skip=skip_scipy)
 
 ErfinvTester = makeBroadcastTester(
     op=tensor.erfinv,
@@ -1870,6 +1894,23 @@ PsiInplaceTester = makeBroadcastTester(
     inplace=True,
     skip=skip_scipy)
 
+_good_broadcast_unary_tri_gamma = _good_broadcast_unary_psi
+
+TriGammaTester = makeBroadcastTester(
+    op=tensor.tri_gamma,
+    expected=expected_tri_gamma,
+    good=_good_broadcast_unary_psi,
+    eps=2e-8,
+    mode=mode_no_scipy,
+    skip=skip_scipy)
+TriGammaInplaceTester = makeBroadcastTester(
+    op=inplace.tri_gamma_inplace,
+    expected=expected_tri_gamma,
+    good=_good_broadcast_unary_tri_gamma,
+    eps=2e-8,
+    mode=mode_no_scipy,
+    inplace=True,
+    skip=skip_scipy)
 
 # chi2sf takes two inputs, a value (x) and a degrees of freedom (k).
 # not sure how to deal with that here...
@@ -1986,11 +2027,11 @@ JvInplaceTester = makeBroadcastTester(
 
 
 def test_verify_jv_grad():
-    """Verify Jv gradient.
-
-    Implemented separately due to need to fix first input for which grad is
-    not defined.
-    """
+    # Verify Jv gradient.
+    # Implemented separately due to need to fix first input for which grad is
+    # not defined.
+    if skip_scipy:
+        raise SkipTest("SciPy needed")
     v_val, x_val = _grad_broadcast_binary_bessel['normal']
 
     def fixed_first_input_jv(x):
@@ -2054,11 +2095,12 @@ IvInplaceTester = makeBroadcastTester(
 
 
 def test_verify_iv_grad():
-    """Verify Iv gradient.
+    # Verify Iv gradient.
+    # Implemented separately due to need to fix first input for which grad is
+    # not defined.
+    if skip_scipy:
+        raise SkipTest("SciPy needed")
 
-    Implemented separately due to need to fix first input for which grad is
-    not defined.
-    """
     v_val, x_val = _grad_broadcast_binary_bessel['normal']
 
     def fixed_first_input_iv(x):
@@ -2154,9 +2196,9 @@ BatchedDotTester = makeTester(
               correct7=(rand(3, 5), rand(3, 5)),
               correct8=(rand(3), rand(3)),
               correct9=(rand(3, 5, 7, 11), rand(3)),
-              correct10=(rand(3, 7, 11, 5), rand(3, 5)),
-              correct11=(rand(3, 7, 11, 5), rand(3, 5, 13)),
-              correct12=(rand(3, 7, 11, 5), rand(3, 13, 5, 17)),
+              correct10=(rand(3, 2, 6, 5), rand(3, 5)),
+              correct11=(rand(3, 2, 6, 5), rand(3, 5, 7)),
+              correct12=(rand(3, 2, 6, 5), rand(3, 7, 5, 8)),
               mixed1=(rand(3, 5).astype('float32'),
                       rand(3, 5, 7)),
               mixed2=(rand(3, 5).astype('float64'),
@@ -2461,16 +2503,12 @@ class TestAlloc(unittest.TestCase):
             grad_derp = theano.grad(derp, some_vector)
             fgrad = theano.function([some_vector], grad_derp,
                                     mode=self.mode)
-            topo_obj = fobj.maker.fgraph.toposort()
-            # <= is needed as the GPU currently don't implement
-            # AdvancedIncSubtensor. When this is the case it can be
-            # replaced with ==.
-            assert np.sum([isinstance(node.op, type(alloc_))
-                           for node in topo_obj]) <= 1
-            topo_grad = fgrad.maker.fgraph.toposort()
 
-            # print subtensor
-            # theano.printing.debugprint(fgrad)
+            topo_obj = fobj.maker.fgraph.toposort()
+            assert np.sum([isinstance(node.op, type(alloc_))
+                           for node in topo_obj]) == 0
+
+            topo_grad = fgrad.maker.fgraph.toposort()
             assert np.sum([isinstance(node.op, type(alloc_))
                            for node in topo_grad]) == n_alloc, (
                                alloc_, subtensor, n_alloc, topo_grad)
@@ -2874,7 +2912,7 @@ class T_Clip(unittest.TestCase):
 
 
 # TODO: consider moving this function / functionality to gradient.py
-#      rationale: it's tricky, and necessary everytime you want to verify
+#      rationale: it's tricky, and necessary every time you want to verify
 #      gradient numerically
 
 
@@ -3082,6 +3120,21 @@ class T_max_and_argmax(unittest.TestCase):
                                 (NoneConst.clone(), None),
                                 (constant(0), 0)]:
             v, i = eval_outputs(max_and_argmax(n, axis))
+            assert i.dtype == 'int64'
+            self.assertTrue(np.all(v == np.max(data, np_axis)))
+            self.assertTrue(np.all(i == np.argmax(data, np_axis)))
+            v_shape = eval_outputs(max_and_argmax(n, axis)[0].shape)
+            assert tuple(v_shape) == np.max(data, np_axis).shape
+
+    def test2_float16(self):
+        # Test negative values and bigger range to make sure numpy don't do the argmax as on uint16
+        data = (rand(20, 30).astype("float16") - 0.5) * 20
+        n = shared(data)
+        for (axis, np_axis) in [(-1, -1), (0, 0), (1, 1), (None, None),
+                                ([0, 1], None), ([1, 0], None),
+                                (NoneConst.clone(), None),
+                                (constant(0), 0)]:
+            v, i = eval_outputs(max_and_argmax(n, axis), (MaxAndArgmax,))
             assert i.dtype == 'int64'
             self.assertTrue(np.all(v == np.max(data, np_axis)))
             self.assertTrue(np.all(i == np.argmax(data, np_axis)))
@@ -3303,6 +3356,19 @@ class T_argmin_argmax(unittest.TestCase):
                 v_shape = eval_outputs(fct(n, axis).shape)
                 assert tuple(v_shape) == nfct(data, np_axis).shape
 
+    def test2_float16(self):
+        # Test negative values and bigger range to make sure numpy don't do the argmax as on uint16
+        data = (rand(20, 30).astype("float16") - 0.5) * 20
+        n = shared(data)
+        mode = get_default_mode().including("local_max_and_argmax", "uncanonicalize")
+        for fct, nfct in [(argmax, np.argmax), (argmin, np.argmin)]:
+            for (axis, np_axis) in [(-1, -1), (0, 0), (1, 1), (None, None),
+                                    ([0, 1], None), ([1, 0], None)]:
+                v = eval_outputs(fct(n, axis), (Argmax,), mode=mode)
+                self.assertTrue(np.all(v == nfct(data, np_axis)))
+                v_shape = eval_outputs(fct(n, axis).shape, mode=mode)
+                assert tuple(v_shape) == nfct(data, np_axis).shape
+
     def test2_invalid(self):
         for fct, nfct in [(argmax, np.argmax), (argmin, np.argmin)]:
             n = as_tensor_variable(rand(2, 3))
@@ -3400,6 +3466,24 @@ class T_argmin_argmax(unittest.TestCase):
             raise Exception('Expected an error')
         except TypeError:
             pass
+
+    def test_uint(self):
+        for dtype in ('uint8', 'uint16', 'uint32', 'uint64'):
+            itype = np.iinfo(dtype)
+            data = np.array([itype.min + 3, itype.min, itype.max - 5, itype.max], dtype)
+            n = as_tensor_variable(data)
+            i = eval_outputs(argmin(n))
+            self.assertEqual(i, 1)
+            i = eval_outputs(argmax(n))
+            self.assertEqual(i, 3)
+
+    def test_bool(self):
+        data = np.array([True, False], 'bool')
+        n = as_tensor_variable(data)
+        i = eval_outputs(argmin(n))
+        self.assertEqual(i, 1)
+        i = eval_outputs(argmax(n))
+        self.assertEqual(i, 0)
 
 
 class T_min_max(unittest.TestCase):
@@ -3585,6 +3669,28 @@ class T_min_max(unittest.TestCase):
         # n = as_tensor_variable(data)
         # check_grad_max(data, eval_outputs(grad(max_and_argmax(n,
         # axis=1)[0], n)),axis=1)
+
+    def test_uint(self):
+        for dtype in ('uint8', 'uint16', 'uint32', 'uint64'):
+            itype = np.iinfo(dtype)
+            data = np.array([itype.min + 3, itype.min, itype.max - 5, itype.max], dtype)
+            n = as_tensor_variable(data)
+            self.assertEqual(min(n).dtype, dtype)
+            i = eval_outputs(min(n))
+            self.assertEqual(i, itype.min)
+            self.assertEqual(max(n).dtype, dtype)
+            i = eval_outputs(max(n))
+            self.assertEqual(i, itype.max)
+
+    def test_bool(self):
+        data = np.array([True, False], 'bool')
+        n = as_tensor_variable(data)
+        self.assertEqual(min(n).dtype, 'bool')
+        i = eval_outputs(min(n))
+        self.assertEqual(i, False)
+        self.assertEqual(max(n).dtype, 'bool')
+        i = eval_outputs(max(n))
+        self.assertEqual(i, True)
 
 
 def test_basic_allclose():
@@ -4325,12 +4431,12 @@ class T_Join_and_Split(unittest.TestCase):
                 assert not isinstance(node.op, type(self.join_op))
 
         # Test dim 1
-        z = self.join_op(1, x1, x2, x3)
-        f = theano.function([], z.shape, mode=self.mode)
-        topo = f.maker.fgraph.toposort()
         x1.set_value(get_mat(3, 4))
         x2.set_value(get_mat(3, 4))
         x3.set_value(get_mat(3, 5))
+        z = self.join_op(1, x1, x2, x3)
+        f = theano.function([], z.shape, mode=self.mode)
+        topo = f.maker.fgraph.toposort()
         out = f()
         assert (out == [3, 13]).all()
 
@@ -4338,14 +4444,15 @@ class T_Join_and_Split(unittest.TestCase):
             for node in topo:
                 assert not isinstance(node.op, type(self.join_op))
 
-        # Test hide error
-        x1.set_value(get_mat(3, 4))
-        x2.set_value(get_mat(3, 4))
-        x3.set_value(get_mat(2, 5))
-        if not self.hide_error:
-            self.assertRaises(ValueError, f)
-        else:
-            f()
+        with change_flags(compute_test_value='off'):
+            # Test hide error
+            x1.set_value(get_mat(3, 4))
+            x2.set_value(get_mat(3, 4))
+            x3.set_value(get_mat(2, 5))
+            if not self.hide_error:
+                self.assertRaises(ValueError, f)
+            else:
+                f()
 
     def test_rebroadcast(self):
         # Regression test for a crash that used to happen when rebroadcasting.
@@ -4387,6 +4494,7 @@ class T_Join_and_Split(unittest.TestCase):
         assert np.allclose(o1, m.get_value(borrow=True))
         assert np.allclose(o2, m.get_value(borrow=True)[4:])
 
+    @change_flags(compute_test_value='off')
     def test_split_neg(self):
         rng = np.random.RandomState(seed=utt.fetch_seed())
         m = self.shared(rng.rand(4, 6).astype(self.floatX))
@@ -4756,6 +4864,9 @@ class T_exp(unittest.TestCase):
         utt.verify_grad(inplace.exp_inplace, [
             np.asarray([[1.5089518, 1.48439076, -4.7820262],
                         [2.04832468, 0.50791564, -1.58892269]])])
+
+    if theano.config.cycle_detection == 'fast' and theano.config.mode != 'FAST_COMPILE':
+        test_grad_1 = unittest.expectedFailure(test_grad_1)
 
     def test_int(self):
         x = ivector()
@@ -5813,6 +5924,21 @@ class TestARange(unittest.TestCase):
         assert np.all(f(10, 2, 2) == np.arange(10, 2, 2))
         assert np.all(f(0, 0, 1) == np.arange(0, 0, 1))
 
+    def test_grads(self):
+        def f(start, stop, step):
+            return ARange(start.type.dtype)(start, stop, step)
+
+        rng = np.random.RandomState(utt.fetch_seed())
+        # Due to the random projection, we should not use the exact
+        # point that change the shape of the output.
+        for start, stop, step in [(0, 4.9, 1),
+                                  (5.1, 0, -0.5),
+                                  (1, 5.1, 0.5)]:
+            utt.verify_grad(f, [np.asarray(start).astype(config.floatX),
+                                np.asarray(stop).astype(config.floatX),
+                                np.asarray(step).astype(config.floatX)],
+                            rng=rng)
+
     def test_integers(self):
         # Test arange constructor, on integer outputs
         start, stop, step = iscalars('start', 'stop', 'step')
@@ -6457,8 +6583,8 @@ class test_tensordot(unittest.TestCase):
             f3 = inplace_func([amat, bmat], c)
             aval = rand(4, 7)
             bval = rand(7, 9)
-            self.assertTrue(np.allclose(np.tensordot(aval, bval, axes),
-                                        f3(aval, bval)))
+            utt.assert_allclose(np.tensordot(aval, bval, axes),
+                                f3(aval, bval))
             utt.verify_grad(self.TensorDot(axes), [aval, bval])
 
     def test_scalar_axes(self):
@@ -7276,11 +7402,12 @@ class T_get_scalar_constant_value(unittest.TestCase):
         a = opt.Assert()(c, c > 1)
         assert get_scalar_constant_value(a) == 2
 
-        # condition is always False
-        a = opt.Assert()(c, c > 2)
-        self.assertRaises(
-            tensor.NotScalarConstantError,
-            get_scalar_constant_value, a)
+        with change_flags(compute_test_value='off'):
+            # condition is always False
+            a = opt.Assert()(c, c > 2)
+            self.assertRaises(
+                tensor.NotScalarConstantError,
+                get_scalar_constant_value, a)
 
         # condition is not constant
         a = opt.Assert()(c, c > x)
@@ -7462,6 +7589,88 @@ class test_diag(unittest.TestCase):
         tensor.verify_grad(diag, [x], rng=rng)
 
 
+class TestAllocDiag(unittest.TestCase):
+    def __init__(self, name, alloc_diag=AllocDiag, mode=None):
+        self.alloc_diag = alloc_diag
+
+        if mode is None:
+            mode = theano.compile.mode.get_default_mode()
+        self.mode = mode
+
+        return super(TestAllocDiag, self).__init__(name)
+
+    def _generator(self):
+        dims = 4
+        shape = (5,) * dims
+        xv = np.random.randn(*shape).astype(config.floatX)
+        for d in xrange(1, dims + 1):
+            # Create a TensorType of the same dimensions as
+            # as the data we want to test.
+            x = TensorType(dtype=config.floatX, broadcastable=(False,) * d)('x')
+
+            # Make a slice of the test data that has the
+            # dimensions we need by doing xv[0,...,0]
+            # For example, for an array of shape (5,), we
+            # need to do xv[0, 0, 0, 0].
+            test_val = xv[((0,) * (dims - d))]
+            yield x, test_val
+
+    def test_alloc_diag_values(self):
+        for x, test_val in self._generator():
+            for offset, axis1, axis2 in [(0, 0, 1), (0, 1, 2), (1, 0, 1),
+                                         (0, 1, 3), (0, 2, 3), (1, 2, 3),
+                                         (-1, 0, 1), (-2, 0, 1), (-1, 1, 2)]:
+                # Test AllocDiag values
+                if np.maximum(axis1, axis2) > len(test_val.shape):
+                    continue
+                adiag_op = self.alloc_diag(offset=offset,
+                                           axis1=axis1,
+                                           axis2=axis2)
+                f = theano.function([x], adiag_op(x))
+                # AllocDiag and extract the diagonal again
+                # to check
+                diag_arr = f(test_val)
+                rediag = np.diagonal(
+                    diag_arr,
+                    offset=offset,
+                    axis1=axis1,
+                    axis2=axis2
+                )
+                assert np.all(rediag == test_val)
+
+                # Test infer_shape
+                f_shape = theano.function([x], adiag_op(x).shape, mode='FAST_RUN')
+
+                theano.printing.debugprint(f_shape.maker.fgraph.outputs[0])
+                output_shape = f_shape(test_val)
+                assert not any(isinstance(node.op, self.alloc_diag)
+                               for node in f_shape.maker.fgraph.toposort())
+                rediag_shape = np.diagonal(
+                    np.ones(output_shape),
+                    offset=offset,
+                    axis1=axis1,
+                    axis2=axis2
+                ).shape
+                assert np.all(rediag_shape == test_val.shape)
+
+                diag_x = adiag_op(x)
+                sum_diag_x = tensor.sum(diag_x)
+                grad_x = tensor.grad(sum_diag_x, x)
+                grad_diag_x = tensor.grad(sum_diag_x, diag_x)
+                f_grad_x = theano.function([x], grad_x, mode=self.mode)
+                f_grad_diag_x = theano.function([x], grad_diag_x, mode=self.mode)
+                grad_input = f_grad_x(test_val)
+                grad_diag_input = f_grad_diag_x(test_val)
+                true_grad_input = np.diagonal(
+                    grad_diag_input,
+                    offset=offset,
+                    axis1=axis1,
+                    axis2=axis2
+                )
+
+                assert np.all(true_grad_input == grad_input)
+
+
 class test_numpy_assumptions(unittest.TestCase):
     # Verify that some assumptions Theano makes on Numpy's behavior still hold.
     def test_ndarray_copy(self):
@@ -7580,7 +7789,7 @@ class TestSpecifyShape(unittest.TestCase):
         f(xval)
         xval = np.random.rand(3).astype(floatX)
         self.assertRaises(AssertionError, f, xval)
-        theano.printing.debugprint(f)
+
         assert isinstance([n for n in f.maker.fgraph.toposort()
                            if isinstance(n.op, SpecifyShape)][0].inputs[0].type,
                           self.input_type)
@@ -8173,6 +8382,107 @@ def test_norm():
     assert np.allclose(f([1, 1]), np.sqrt(2))
 
 
+class test_cov(unittest.TestCase):
+
+    def test_core(self):
+        x = theano.tensor.matrix('x')
+        c = theano.tensor.cov(x)
+        f = theano.function([x], c)
+
+        # basic cov function
+        data = np.asarray(np.random.rand(3, 5), dtype=config.floatX)
+        assert np.allclose(f(data), np.cov(data))
+
+        data = np.asarray(np.random.rand(5, 3), dtype=config.floatX)
+        assert np.allclose(f(data), np.cov(data))
+
+        data = np.asarray(np.random.rand(10, 10), dtype=config.floatX)
+        assert np.allclose(f(data), np.cov(data))
+
+        data = np.asarray(np.random.rand(2, 2), dtype=config.floatX)
+        assert np.allclose(f(data), np.cov(data))
+
+        data = np.asarray(np.random.rand(1, 2), dtype=config.floatX)
+        assert np.allclose(f(data), np.cov(data))
+
+    def test_rowvar(self):
+        for rowvar in [True, False]:
+            x = theano.tensor.matrix('x')
+            c = theano.tensor.cov(x, rowvar=rowvar)
+            f = theano.function([x], c)
+
+            data = np.asarray(np.random.rand(3, 5), dtype=config.floatX)
+            assert np.allclose(f(data), np.cov(data, rowvar=rowvar))
+
+            data = np.asarray(np.random.rand(5, 3), dtype=config.floatX)
+            assert np.allclose(f(data), np.cov(data, rowvar=rowvar))
+
+            data = np.asarray(np.random.rand(10, 10), dtype=config.floatX)
+            assert np.allclose(f(data), np.cov(data, rowvar=rowvar))
+
+            data = np.asarray(np.random.rand(2, 2), dtype=config.floatX)
+            assert np.allclose(f(data), np.cov(data, rowvar=rowvar))
+
+        # check when variables are along the first axis
+        x = theano.tensor.matrix('x')
+        c = theano.tensor.cov(x, rowvar=False)
+        f = theano.function([x], c)
+        data = np.asarray(np.random.rand(2, 1), dtype=config.floatX)
+        assert np.allclose(f(data), np.cov(data, rowvar=False))
+
+    def test_y(self):
+        # test y
+        x = theano.tensor.matrix('x')
+        y = theano.tensor.matrix('y')
+        c = theano.tensor.cov(x, y=y)
+        f = theano.function([x, y], c)
+
+        data = np.asarray(np.random.rand(3, 5), dtype=config.floatX)
+        y = np.asarray(np.random.rand(3, 5), dtype=config.floatX)
+        assert np.allclose(f(data, y), np.cov(data, y=y))
+
+        data = np.asarray(np.random.rand(5, 3), dtype=config.floatX)
+        y = np.asarray(np.random.rand(5, 3), dtype=config.floatX)
+        assert np.allclose(f(data, y), np.cov(data, y=y))
+
+        data = np.asarray(np.random.rand(10, 10), dtype=config.floatX)
+        y = np.asarray(np.random.rand(10, 10), dtype=config.floatX)
+        assert np.allclose(f(data, y), np.cov(data, y=y))
+
+        data = np.asarray(np.random.rand(2, 2), dtype=config.floatX)
+        y = np.asarray(np.random.rand(2, 2), dtype=config.floatX)
+        assert np.allclose(f(data, y), np.cov(data, y=y))
+
+    def test_ddof(self):
+
+        for ddof in range(0, 5):
+            x = theano.tensor.matrix('x')
+            c = theano.tensor.cov(x, ddof=ddof)
+            f = theano.function([x], c)
+
+            data = np.asarray(np.random.rand(3, 5), dtype=config.floatX)
+            assert np.allclose(f(data), np.cov(data, ddof=ddof))
+
+    def test_bias(self):
+
+        for bias in [True, False]:
+            x = theano.tensor.matrix('x')
+            c = theano.tensor.cov(x, bias=bias)
+            f = theano.function([x], c)
+
+            data = np.asarray(np.random.rand(3, 5), dtype=config.floatX)
+            assert np.allclose(f(data), np.cov(data, bias=bias))
+
+        for ddof in range(0, 5):
+            for bias in [True, False]:
+                x = theano.tensor.matrix('x')
+                c = theano.tensor.cov(x, ddof=ddof, bias=bias)
+                f = theano.function([x], c)
+
+                data = np.asarray(np.random.rand(3, 5), dtype=config.floatX)
+                assert np.allclose(f(data), np.cov(data, ddof=ddof, bias=bias))
+
+
 class test_ptp(unittest.TestCase):
     def test_scalar(self):
         # Should return 0 for all scalar
@@ -8339,6 +8649,19 @@ class T_Choose(utt.InferShapeTester):
             f = function([a, b], choose(a, b, mode=m))
             t_c = f(A, B)
             n_c = np.choose(A, B, mode=m)
+            assert np.allclose(t_c, n_c)
+
+    def test_method(self):
+        a = tensor.vector(dtype='int32')
+        b = tensor.matrix(dtype='float32')
+
+        A = np.random.randint(0, 4, 4).astype('int32')
+        B = np.asarray(np.random.rand(4, 4), dtype='float32')
+
+        for m in self.modes:
+            f = function([a, b], a.choose(b, mode=m))
+            t_c = f(A, B)
+            n_c = A.choose(B, mode=m)
             assert np.allclose(t_c, n_c)
 
     def test_broadcasted(self):

@@ -46,6 +46,15 @@ def test_pseudoinverse_correctness():
     assert _allclose(ri, np.linalg.pinv(r))
 
 
+def test_pseudoinverse_grad():
+    rng = np.random.RandomState(utt.fetch_seed())
+    d1 = rng.randint(4) + 2
+    d2 = rng.randint(4) + 2
+    r = rng.randn(d1, d2).astype(theano.config.floatX)
+
+    utt.verify_grad(pinv, [r])
+
+
 class test_MatrixInverse(utt.InferShapeTester):
     def setUp(self):
         super(test_MatrixInverse, self).setUp()
@@ -340,15 +349,6 @@ class test_diag(unittest.TestCase):
         y = extract_diag(x)
         assert y.owner.op.__class__ == ExtractDiag
 
-        # other types should raise error
-        x = theano.tensor.tensor3()
-        ok = False
-        try:
-            y = extract_diag(x)
-        except TypeError:
-            ok = True
-        assert ok
-
     # not testing the view=True case since it is not used anywhere.
     def test_extract_diag(self):
         rng = np.random.RandomState(utt.fetch_seed())
@@ -374,6 +374,8 @@ class test_diag(unittest.TestCase):
         try:
             extract_diag(xx)
         except TypeError:
+            ok = True
+        except ValueError:
             ok = True
         assert ok
 
@@ -420,6 +422,9 @@ def test_trace():
         trace(xx)
     except TypeError:
         ok = True
+    except ValueError:
+        ok = True
+
     assert ok
 
 

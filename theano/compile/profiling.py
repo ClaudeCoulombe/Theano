@@ -93,7 +93,7 @@ def _atexit_print_fn():
                              "linker_make_thunk_time"]:
                     cum_attr = getattr(cum, attr)
                     for key, val in iteritems(getattr(ps, attr)):
-                        assert key not in cum_attr
+                        assert key not in cum_attr, (key, cum_attr)
                         cum_attr[key] = val
 
                 if cum.optimizer_profile and ps.optimizer_profile:
@@ -788,7 +788,7 @@ class ProfileStats(object):
                     else:
                         v = 0  # 'Unknown'
                 else:
-                    v = 0  # 'Variable isnt created'
+                    v = 0  # 'Variable isn't created'
 
                 var_mem[out] = v
                 fct_memory[node.fgraph][node].append(v)
@@ -830,7 +830,6 @@ class ProfileStats(object):
 
             """
             from theano.gpuarray import GpuArrayType
-
             # Initial Mem info values [CPU, GPU]
             node_memory_size = [0, 0]
             running_memory_size = [0, 0]
@@ -1499,8 +1498,8 @@ class ScanProfileStats(ProfileStats):
         pass
 
     def summary_function(self, file):
-        # RP: everytime we compile a function a ProfileStats is created for
-        # that function. This means that everytime a optimization replaces
+        # RP: every time we compile a function a ProfileStats is created for
+        # that function. This means that every time a optimization replaces
         # some scan op, some orphane ProfileStats remains in the air ..
         # also even without any optimization, scan compiles a dummy function
         # that will produce a ProfileStats that will correspond to a

@@ -26,6 +26,8 @@ except (ImportError, ValueError):
 
 
 class Erf(UnaryScalarOp):
+    nfunc_spec = ('scipy.special.erf', 1, 1)
+
     def impl(self, x):
         if imported_scipy_special:
             return scipy.special.erf(x)
@@ -52,11 +54,14 @@ class Erf(UnaryScalarOp):
         z, = out
         if node.inputs[0].type in complex_types:
             raise NotImplementedError('type not supported', type)
-        return "%(z)s = erf(%(x)s);" % locals()
+        cast = node.outputs[0].type.dtype_specs()[1]
+        return "%(z)s = erf((%(cast)s)%(x)s);" % locals()
 erf = Erf(upgrade_to_float, name='erf')
 
 
 class Erfc(UnaryScalarOp):
+    nfunc_spec = ('scipy.special.erfc', 1, 1)
+
     def impl(self, x):
         if imported_scipy_special:
             return scipy.special.erfc(x)
@@ -83,7 +88,8 @@ class Erfc(UnaryScalarOp):
         z, = out
         if node.inputs[0].type in complex_types:
             raise NotImplementedError('type not supported', type)
-        return "%(z)s = erfc(%(x)s);" % locals()
+        cast = node.outputs[0].type.dtype_specs()[1]
+        return "%(z)s = erfc((%(cast)s)%(x)s);" % locals()
 
 # scipy.special.erfc don't support complex. Why?
 erfc = Erfc(upgrade_to_float_no_complex, name='erfc')
@@ -103,6 +109,8 @@ class Erfcx(UnaryScalarOp):
     running on GPU an optimization will replace it with a gpu version.
 
     """
+    nfunc_spec = ('scipy.special.erfcx', 1, 1)
+
     def impl(self, x):
         if imported_scipy_special:
             return scipy.special.erfcx(x)
@@ -138,6 +146,8 @@ class Erfinv(UnaryScalarOp):
 
     (TODO) Find a C implementation of erfinv for CPU.
     """
+    nfunc_spec = ('scipy.special.erfinv', 1, 1)
+
     def impl(self, x):
         if imported_scipy_special:
             return scipy.special.erfinv(x)
@@ -171,6 +181,8 @@ erfinv = Erfinv(upgrade_to_float_no_complex, name='erfinv')
 
 
 class Erfcinv(UnaryScalarOp):
+    nfunc_spec = ('scipy.special.erfcinv', 1, 1)
+
     def impl(self, x):
         if imported_scipy_special:
             return scipy.special.erfcinv(x)
@@ -204,6 +216,8 @@ erfcinv = Erfcinv(upgrade_to_float_no_complex, name='erfcinv')
 
 
 class Gamma(UnaryScalarOp):
+    nfunc_spec = ('scipy.special.gamma', 1, 1)
+
     @staticmethod
     def st_impl(x):
         return scipy.special.gamma(x)
@@ -241,6 +255,8 @@ class GammaLn(UnaryScalarOp):
     Log gamma function.
 
     """
+    nfunc_spec = ('scipy.special.gammaln', 1, 1)
+
     @staticmethod
     def st_impl(x):
         return scipy.special.gammaln(x)
@@ -275,11 +291,8 @@ class GammaLn(UnaryScalarOp):
         # For some reason, on the GPU, uint64 inputs don't get casted
         # automatically to float64. This make the compilation crash
         dtype = ""
-        if node.outputs[0].dtype == 'float64':
-            dtype = "(double)"
-        elif node.outputs[0].dtype == 'float32':
-            dtype = "(float)"
-        return """%(z)s = lgamma(%(dtype)s%(x)s);""" % locals()
+        cast = node.outputs[0].type.dtype_specs()[1]
+        return """%(z)s = lgamma((%(cast)s)%(x)s);""" % locals()
 gammaln = GammaLn(upgrade_to_float, name='gammaln')
 
 
@@ -288,6 +301,8 @@ class Psi(UnaryScalarOp):
     Derivative of log gamma function.
 
     """
+    nfunc_spec = ('scipy.special.psi', 1, 1)
+
     @staticmethod
     def st_impl(x):
         return scipy.special.psi(x)
@@ -298,8 +313,18 @@ class Psi(UnaryScalarOp):
         else:
             super(Psi, self).impl(x)
 
-    def grad(self, inputs, outputs_gradients):
-        raise NotImplementedError()
+    def L_op(self, inputs, outputs, grads):
+        x, = inputs
+        gz, = grads
+        if x.type in complex_types:
+            raise NotImplementedError()
+        if outputs[0].type in discrete_types:
+            if x.type in discrete_types:
+                return [x.zeros_like(dtype=theano.config.floatX)]
+            else:
+                return [x.zeros_like()]
+
+        return [gz * tri_gamma(x)]
 
     def c_support_code(self):
         return (
@@ -365,6 +390,94 @@ class Psi(UnaryScalarOp):
 psi = Psi(upgrade_to_float, name='psi')
 
 
+class TriGamma(UnaryScalarOp):
+    """
+    Second derivative of log gamma function.
+
+    """
+
+    @staticmethod
+    def st_impl(x):
+        return scipy.special.polygamma(1, x)
+
+    def impl(self, x):
+        if imported_scipy_special:
+            return TriGamma.st_impl(x)
+        else:
+            super(TriGamma, self).impl(x)
+
+    def grad(self, inputs, outputs_gradients):
+        raise NotImplementedError()
+
+    def c_support_code(self):
+        # The implementation has been copied from
+        # http://people.sc.fsu.edu/~jburkardt/cpp_src/asa121/asa121.html
+        return (
+            """
+            // For GPU support
+            #ifdef WITHIN_KERNEL
+            #define DEVICE WITHIN_KERNEL
+            #else
+            #define DEVICE
+            #endif
+
+            #ifndef ga_double
+            #define ga_double double
+            #endif
+
+            #ifndef _TRIGAMMAFUNCDEFINED
+            #define _TRIGAMMAFUNCDEFINED
+
+            DEVICE double _tri_gamma(ga_double x) {
+
+                double a = 0.0001;
+                double b = 5.0;
+                double b2 =  0.1666666667;
+                double b4 = -0.03333333333;
+                double b6 =  0.02380952381;
+                double b8 = -0.03333333333;
+                double value;
+                double y;
+                double z;
+
+                if (x <= 0) {
+                    return 0.0;
+                }
+
+                if ( x <= a ) {
+                    value = 1.0 / x / x;
+                    return value;
+                }
+
+                value = 0.0;
+                z = x;
+
+                while ( z < b ) {
+                    value += 1.0 / z / z;
+                    z += 1.0;
+                }
+
+                y = 1.0 / z / z;
+
+                value +=  0.5 * y + (1.0 + y * (b2 + y * (b4 + y * (b6 + y * b8 )))) / z;
+
+                return value;
+            }
+            #endif
+            """)
+
+    def c_code(self, node, name, inp, out, sub):
+        x, = inp
+        z, = out
+        if node.inputs[0].type in float_types:
+            return """%(z)s =
+                _tri_gamma(%(x)s);""" % locals()
+        raise NotImplementedError('only floating point is implemented')
+
+
+tri_gamma = TriGamma(upgrade_to_float, name='tri_gamma')
+
+
 class Chi2SF(BinaryScalarOp):
     """
     Compute (1 - chi2_cdf(x)) ie. chi2 pvalue (chi2 'survival function').
@@ -375,6 +488,7 @@ class Chi2SF(BinaryScalarOp):
     https://github.com/Theano/Theano_lgpl.git
 
     """
+    nfunc_spec = ('scipy.stats.chi2.sf', 2, 1)
 
     @staticmethod
     def st_impl(x, k):
@@ -392,6 +506,7 @@ class Jv(BinaryScalarOp):
     """
     Bessel function of the first kind of order v (real).
     """
+    nfunc_spec = ('scipy.special.jv', 2, 1)
 
     @staticmethod
     def st_impl(v, x):
@@ -416,6 +531,7 @@ class J1(UnaryScalarOp):
     """
     Bessel function of the first kind of order 1.
     """
+    nfunc_spec = ('scipy.special.j1', 1, 1)
 
     @staticmethod
     def st_impl(x):
@@ -447,6 +563,7 @@ class J0(UnaryScalarOp):
     """
     Bessel function of the first kind of order 0.
     """
+    nfunc_spec = ('scipy.special.j0', 1, 1)
 
     @staticmethod
     def st_impl(x):
@@ -478,6 +595,7 @@ class Iv(BinaryScalarOp):
     """
     Modified Bessel function of the first kind of order v (real).
     """
+    nfunc_spec = ('scipy.special.iv', 2, 1)
 
     @staticmethod
     def st_impl(v, x):
@@ -502,6 +620,7 @@ class I1(UnaryScalarOp):
     """
     Modified Bessel function of the first kind of order 1.
     """
+    nfunc_spec = ('scipy.special.i1', 1, 1)
 
     @staticmethod
     def st_impl(x):
@@ -525,6 +644,7 @@ class I0(UnaryScalarOp):
     """
     Modified Bessel function of the first kind of order 0.
     """
+    nfunc_spec = ('scipy.special.i0', 1, 1)
 
     @staticmethod
     def st_impl(x):

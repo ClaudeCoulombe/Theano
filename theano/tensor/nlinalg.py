@@ -4,13 +4,14 @@ import logging
 import warnings
 import numpy as np
 from six.moves import xrange
+from functools import partial
 
 import theano
 from theano.tensor import as_tensor_variable
 from theano.gof import Op, Apply
 from theano.gradient import DisconnectedType
 from theano.tensor import basic as tensor
-
+from theano.tensor.basic import ExtractDiag
 logger = logging.getLogger(__name__)
 
 
@@ -45,6 +46,30 @@ class MatrixPinv(Op):
         (x,) = inputs
         (z,) = outputs
         z[0] = np.linalg.pinv(x).astype(x.dtype)
+
+    def L_op(self, inputs, outputs, g_outputs):
+        r"""The gradient function should return
+
+            .. math:: V\frac{\partial X^+}{\partial X},
+
+        where :math:`V` corresponds to ``g_outputs`` and :math:`X` to
+        ``inputs``. According to `Wikipedia
+        <https://en.wikipedia.org/wiki/Moore%E2%80%93Penrose_pseudoinverse#Derivative>`_,
+        this corresponds to
+
+            .. math:: (-X^+ V^T X^+ + X^+ X^{+T} V (I - X X^+) + (I - X^+ X) V X^{+T} X^+)^T.
+        """
+        x, = inputs
+        z, = outputs
+        gz, = g_outputs
+
+        x_dot_z = theano.tensor.dot(x, z)
+        z_dot_x = theano.tensor.dot(z, x)
+
+        grad = (-matrix_dot(z, gz.T, z) +
+                matrix_dot(z, z.T, gz, (theano.tensor.identity_like(x_dot_z) - x_dot_z)) +
+                matrix_dot((theano.tensor.identity_like(z_dot_x) - z_dot_x), gz, z.T, z)).T
+        return [grad]
 
 pinv = MatrixPinv()
 
@@ -169,75 +194,6 @@ class AllocDiag(Op):
         return [(x_s[0], x_s[0])]
 
 alloc_diag = AllocDiag()
-
-
-class ExtractDiag(Op):
-    """Return the diagonal of a matrix.
-
-    Notes
-    -----
-    Works on the GPU.
-
-    """
-
-    __props__ = ("view",)
-
-    def __init__(self, view=False):
-        self.view = view
-        if self.view:
-            self.view_map = {0: [0]}
-
-    def make_node(self, _x):
-        warnings.warn("DeprecationWarning: theano.tensor.nlinalg.ExtractDiag"
-                      "is deprecated, please use theano.tensor.ExtractDiag"
-                      "instead.",
-                      category=DeprecationWarning)
-        if not isinstance(_x, theano.Variable):
-            x = as_tensor_variable(_x)
-        else:
-            x = _x
-
-        if x.type.ndim != 2:
-            raise TypeError('ExtractDiag only works on matrices', _x)
-        y = x.type.clone(broadcastable=(False,))()
-        return Apply(self, [x], [y])
-
-    def perform(self, node, ins, outs):
-        """ For some reason numpy.diag(x) is really slow, so we
-        implemented our own. """
-        x, = ins
-        z, = outs
-        # zero-dimensional matrices ...
-        if x.shape[0] == 0 or x.shape[1] == 0:
-            z[0] = node.outputs[0].type.value_zeros((0,))
-            return
-
-        if x.shape[0] < x.shape[1]:
-            rval = x[:, 0]
-        else:
-            rval = x[0]
-
-        rval.strides = (x.strides[0] + x.strides[1],)
-        if self.view:
-            z[0] = rval
-        else:
-            z[0] = rval.copy()
-
-    def __str__(self):
-        return 'ExtractDiag{view=%s}' % self.view
-
-    def grad(self, inputs, g_outputs):
-        x = theano.tensor.zeros_like(inputs[0])
-        xdiag = alloc_diag(g_outputs[0])
-        return [theano.tensor.set_subtensor(
-            x[:xdiag.shape[0], :xdiag.shape[1]],
-            xdiag)]
-
-    def infer_shape(self, node, shapes):
-        x_s, = shapes
-        shp = theano.tensor.min(node.inputs[0].shape)
-        return [(shp,)]
-
 extract_diag = ExtractDiag()
 # TODO: optimization to insert ExtractDiag with view=True
 
@@ -420,10 +376,10 @@ class EighGrad(Op):
         self.UPLO = UPLO
         if UPLO == 'L':
             self.tri0 = np.tril
-            self.tri1 = lambda a: np.triu(a, 1)
+            self.tri1 = partial(np.triu, k=1)
         else:
             self.tri0 = np.triu
-            self.tri1 = lambda a: np.tril(a, -1)
+            self.tri1 = partial(np.tril, k=-1)
 
     def make_node(self, x, w, v, gw, gv):
         x, w, v, gw, gv = map(as_tensor_variable, (x, w, v, gw, gv))
@@ -515,7 +471,7 @@ class QRIncomplete(Op):
     Incomplete QR Decomposition.
 
     Computes the QR decomposition of a matrix.
-    Factor the matrix a as qr and return a single matrix.
+    Factor the matrix a as qr and return a single matrix R.
 
     """
 
@@ -528,15 +484,14 @@ class QRIncomplete(Op):
     def make_node(self, x):
         x = as_tensor_variable(x)
         assert x.ndim == 2, "The input of qr function should be a matrix."
-        q = theano.tensor.matrix(dtype=x.dtype)
-        return Apply(self, [x], [q])
+        r = theano.tensor.matrix(dtype=x.dtype)
+        return Apply(self, [x], [r])
 
     def perform(self, node, inputs, outputs):
         (x,) = inputs
-        (q,) = outputs
+        (r,) = outputs
         assert x.ndim == 2, "The input of qr function should be a matrix."
-        q[0] = self._numop(x,
-                           self.mode)
+        r[0] = self._numop(x, self.mode)
 
 
 def qr(a, mode="reduced"):
@@ -741,7 +696,7 @@ def norm(x, ord):
         else:
             raise ValueError(0)
     elif ndim > 2:
-        raise NotImplementedError("We don't support norm witn ndim > 2")
+        raise NotImplementedError("We don't support norm with ndim > 2")
 
 
 class TensorInv(Op):

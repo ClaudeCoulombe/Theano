@@ -2,6 +2,7 @@
 
 BUILDBOT_DIR=$WORKSPACE/nightly_build
 THEANO_PARAM="theano --with-timer --timer-top-n 10"
+export MKL_THREADING_LAYER=GNU
 export THEANO_FLAGS=init_gpu_device=cuda
 
 # CUDA
@@ -16,7 +17,7 @@ LIBDIR=${WORKSPACE}/local
 
 # Make fresh clones of libgpuarray (with no history since we don't need it)
 rm -rf libgpuarray
-git clone --depth 1 "https://github.com/Theano/libgpuarray.git"
+git clone "https://github.com/Theano/libgpuarray.git"
 
 # Clean up previous installs (to make sure no old files are left)
 rm -rf $LIBDIR
@@ -66,6 +67,9 @@ export PYTHONPATH=${WORKSPACE}:$PYTHONPATH
 echo "Number of elements in the compiledir:"
 ls ${COMPILEDIR}|wc -l
 
+# Exit if theano.gpuarray import fails
+python -c "import theano.gpuarray; theano.gpuarray.use('${DEVICE}')" || { echo 'theano.gpuarray import failed, exiting'; exit 1; }
+
 # We don't want warnings in the buildbot for errors already fixed.
 FLAGS=${THEANO_FLAGS},warn.ignore_bug_before=all,$FLAGS
 
@@ -87,7 +91,7 @@ FLAGS=${FLAGS},magma.enabled=true
 FLAGS=${FLAGS},cmodule.age_thresh_use=604800
 
 echo "Executing tests with mode=FAST_RUN"
-NAME=fastrun
+NAME=python2_fastrun
 FILE=${ROOT_CWD}/theano_${NAME}_tests.xml
 echo "THEANO_FLAGS=cmodule.warn_no_version=True,${FLAGS},mode=FAST_RUN ${NOSETESTS} ${PROFILING} ${THEANO_PARAM} ${XUNIT}${FILE} ${SUITE}${NAME}"
 date
@@ -97,7 +101,7 @@ ls ${COMPILEDIR}|wc -l
 echo
 
 echo "Executing tests with mode=FAST_RUN,floatX=float32"
-NAME=fastrun_float32
+NAME=python2_fastrun_float32
 FILE=${ROOT_CWD}/theano_${NAME}_tests.xml
 echo "THEANO_FLAGS=${FLAGS},mode=FAST_RUN,floatX=float32 ${NOSETESTS} ${THEANO_PARAM} ${XUNIT}${FILE} ${SUITE}${NAME}"
 date
@@ -107,7 +111,7 @@ ls ${COMPILEDIR}|wc -l
 echo
 
 echo "Executing tests with linker=vm,vm.lazy=True,floatX=float32"
-NAME=fastrun_float32_lazyvm
+NAME=python2_fastrun_float32_lazyvm
 FILE=${ROOT_CWD}/theano_${NAME}_tests.xml
 echo "THEANO_FLAGS=${FLAGS},linker=vm,vm.lazy=True,floatX=float32 ${NOSETESTS} ${THEANO_PARAM} ${XUNIT}${FILE} ${SUITE}${NAME}"
 date
@@ -121,7 +125,7 @@ echo
 # with --batch=1000" # The buildbot freeze sometimes when collecting the tests to run
 # force_device=True as it would be useless to test the gpuarray back-end.
 echo "Executing tests with mode=FAST_COMPILE"
-NAME=fastcompile
+NAME=python2_fastcompile
 FILE=${ROOT_CWD}/theano_${NAME}_tests.xml
 echo "THEANO_FLAGS=${FLAGS},mode=FAST_COMPILE,force_device=True ${NOSETESTS} ${THEANO_PARAM} ${XUNIT}${FILE} ${SUITE}${NAME}"
 date

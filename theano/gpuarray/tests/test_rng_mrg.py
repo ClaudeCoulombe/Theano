@@ -4,11 +4,11 @@ import functools
 import numpy as np
 
 import theano
-from theano import tensor
-from theano.configparser import change_flags
+from theano import change_flags, tensor
 from theano.sandbox import rng_mrg
 from theano.sandbox.rng_mrg import MRG_RandomStreams
 from theano.sandbox.tests.test_rng_mrg import java_samples, rng_mrg_overflow
+from theano.sandbox.tests.test_rng_mrg import test_f16_nonzero as cpu_f16_nonzero
 from theano.tests import unittest_tools as utt
 
 from .config import mode_with_gpu as mode
@@ -162,3 +162,34 @@ def test_validate_input_types_gpuarray_backend():
         rstate = np.zeros((7, 6), dtype="int32")
         rstate = gpuarray_shared_constructor(rstate)
         rng_mrg.mrg_uniform.new(rstate, ndim=None, dtype="float32", size=(3,))
+
+
+def test_f16_nonzero():
+    try:
+        # To have theano.shared(x) try to move on the GPU
+        theano.compile.shared_constructor(gpuarray_shared_constructor)
+        cpu_f16_nonzero(mode=mode, op_to_check=GPUA_mrg_uniform)
+    finally:
+        theano.compile.shared_constructor(gpuarray_shared_constructor,
+                                          remove=True)
+
+
+def test_cpu_target_with_shared_variable():
+    srng = MRG_RandomStreams()
+    s = np.random.rand(2, 3).astype('float32')
+    x = gpuarray_shared_constructor(s, name='x')
+    try:
+        # To have theano.shared(x) try to move on the GPU
+        theano.compile.shared_constructor(gpuarray_shared_constructor)
+        y = srng.uniform(x.shape, target='cpu')
+        y.name = 'y'
+        z = (x * y).sum()
+        z.name = 'z'
+
+        fz = theano.function([], z, mode=mode)
+
+        nodes = fz.maker.fgraph.toposort()
+        assert not any([isinstance(node.op, GPUA_mrg_uniform) for node in nodes])
+    finally:
+        theano.compile.shared_constructor(gpuarray_shared_constructor,
+                                          remove=True)

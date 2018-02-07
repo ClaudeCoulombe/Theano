@@ -25,7 +25,7 @@ from theano.gof import Variable, Constant
 from theano.gof.opt import copy_stack_trace, in2out
 from theano.gof.utils import MethodNotDefined
 from theano.gradient import DisconnectedType
-from theano.configparser import config
+from theano import config
 from theano.tensor.elemwise import Elemwise, DimShuffle
 from theano.tensor.subtensor import (get_idx_list, get_canonical_form_slice,
                                      Subtensor, IncSubtensor, make_constant,
@@ -35,6 +35,7 @@ from theano.tensor.subtensor import (get_idx_list, get_canonical_form_slice,
                                      advanced_subtensor,
                                      advanced_subtensor1,
                                      advanced_inc_subtensor1)
+from theano.tensor.sort import TopKOp
 from theano import scalar
 from theano.scalar import basic
 from theano.tensor import basic as T
@@ -265,8 +266,8 @@ class InplaceElemwiseOptimizer(Optimizer):
                 candidate_inputs = [i for i in xrange(len(node.inputs))
                                     if i not in baseline.values() and
                                     not isinstance(node.inputs[i], Constant) and
-                                    # Is next line costly?
-                                    not fgraph.destroyers(node.inputs[i]) and
+                                    # the next line should not be costly most of the time.
+                                    not fgraph.has_destroyers([node.inputs[i]]) and
                                     node.inputs[i] not in protected_inputs]
             else:
                 baseline = []
@@ -277,7 +278,7 @@ class InplaceElemwiseOptimizer(Optimizer):
                 # Remove here as faster.
                 candidate_inputs = [i for i in xrange(len(node.inputs))
                                     if not isinstance(node.inputs[i], Constant) and
-                                    not fgraph.destroyers(node.inputs[i]) and
+                                    not fgraph.has_destroyers([node.inputs[i]]) and
                                     node.inputs[i] not in protected_inputs]
 
             verbose = False
@@ -2087,16 +2088,16 @@ def local_subtensor_make_vector(node):
 @gof.local_optimizer([T.Elemwise])
 def local_useless_elemwise(node):
     """
-    eq(x,x) -> 1
-    neq(x,x) -> 0
+    eq(x, x) -> 1
+    neq(x, x) -> 0
     mul(x) -> x
     add(x) -> x
     identity(x) -> x
-    and(x,1) -> x
-    and(x,0) -> zeros_like(x)
-    or(x,0) -> x
-    or(x,1) -> ones_like(x)
-    xor(x,x) -> zeros_like(x)
+    and(x, 1) -> x  (if x.dtype == 'bool')
+    and(x, 0) -> zeros_like(x)
+    or(x, 0) -> x
+    or(x, 1) -> ones_like(x)  (if x.dtype == 'bool')
+    xor(x, x) -> zeros_like(x)
 
     """
     if isinstance(node.op, T.Elemwise):
@@ -2141,7 +2142,9 @@ def local_useless_elemwise(node):
                     if const_val == 0:
                         return [T.zeros_like(node.inputs[1], dtype=dtype,
                                              opt=True)]
-                    else:
+                    elif node.outputs[0].dtype == 'bool':
+                        # If the output is not Boolean, it is the bitwise AND,
+                        # and this optimization would be wrong
                         return [node.inputs[1].astype(node.outputs[0].dtype)]
 
             if isinstance(node.inputs[1], T.TensorConstant):
@@ -2150,7 +2153,9 @@ def local_useless_elemwise(node):
                     if const_val == 0:
                         return [T.zeros_like(node.inputs[0], dtype=dtype,
                                              opt=True)]
-                    else:
+                    elif node.outputs[0].dtype == 'bool':
+                        # If the output is not Boolean, it is the bitwise AND,
+                        # and this optimization would be wrong
                         return [node.inputs[0].astype(node.outputs[0].dtype)]
 
         elif (isinstance(node.op.scalar_op, scalar.OR) and
@@ -2161,7 +2166,9 @@ def local_useless_elemwise(node):
                 if not isinstance(const_val, Variable):
                     if const_val == 0:
                         return [node.inputs[1].astype(node.outputs[0].dtype)]
-                    else:
+                    elif node.outputs[0].dtype == 'bool':
+                        # If the output is not Boolean, it is the bitwise OR,
+                        # and this optimization would be wrong
                         return [T.ones_like(node.inputs[1], dtype=dtype,
                                             opt=True)]
 
@@ -2170,7 +2177,9 @@ def local_useless_elemwise(node):
                 if not isinstance(const_val, Variable):
                     if const_val == 0:
                         return [node.inputs[0].astype(node.outputs[0].dtype)]
-                    else:
+                    elif node.outputs[0].dtype == 'bool':
+                        # If the output is not Boolean, it is the bitwise OR,
+                        # and this optimization would be wrong
                         return [T.ones_like(node.inputs[0], dtype=dtype,
                                             opt=True)]
 
@@ -3224,7 +3233,7 @@ def local_subtensor_of_dot(node):
 
     # This is necessary because np.dot sums the last index of a with the second to last of b
     # so we want to skip the second-to-last index into b.
-    # This wasn't necessary for a, because we just ommitted the last index.
+    # This wasn't necessary for a, because we just omitted the last index.
     # We skip this if b.ndim = 1, since then we just want b_sub = b, not b_sub = b[:]
     # (dot also handles b.ndim < 2 as a special case)
     if b.ndim > 1 and len(b_indices) >= b.ndim - 1:
@@ -4058,7 +4067,7 @@ def local_useless_switch(node):
 @gof.local_optimizer([T.mul])
 def local_mul_switch_sink(node):
     """
-    This optimization makes the folowing changes in the graph:
+    This optimization makes the following changes in the graph:
     T.mul(A,T.switch(cond,0,iff),B) -->  T.switch(cond,0,T.mul(A,B,iff))
     T.mul(A,T.switch(cond,ift,0),B) -->  T.switch(cond,T.mul(A,B,ift),0)
     A and B being several (or none) symbolic variables.
@@ -4140,7 +4149,7 @@ def local_mul_switch_sink(node):
 @gof.local_optimizer([T.true_div, T.int_div])
 def local_div_switch_sink(node):
     """
-    This optimization makes the folowing changes in the graph:
+    This optimization makes the following changes in the graph:
     T.div(T.switch(cond,0,iff),A) -->  T.switch(cond,0,T.div(iff,A))
     T.div(T.switch(cond,ift,0),A) -->  T.switch(cond,T.div(ift,A),0)
 
@@ -4938,7 +4947,7 @@ class Canonizer(gof.LocalOptimizer):
                 # -> then we return very exactly the original num/denum.
                 # If we don't do that the optimizer will just loop
                 # infinitely because it will not catch on that there are
-                # no changes to be made and everytime it will want to
+                # no changes to be made and every time it will want to
                 # replace something by the same thing...
                 # Note that it is important to use `values_eq` instead of
                 # the == operator, to handle NaN values correctly.
@@ -4989,10 +4998,7 @@ class Canonizer(gof.LocalOptimizer):
 
         new = self.merge_num_denum(num, denum)
         if new.type.dtype != out.type.dtype:
-            # new = T.fill(out, new)
-            elem_op = T.Elemwise(scalar.Identity(scalar.specific_out(
-                getattr(scalar, out.type.dtype))))
-            new = elem_op(new)
+            new = T.cast(new, out.type.dtype)
 
         assert (new.type == out.type) == (not (new.type != out.type))
 
@@ -5026,7 +5032,7 @@ def mul_calculate(num, denum, aslist=False, out_type=None):
         else:
             return np.int8(1)
 
-    # Make sure we do not accidently upcast data types.
+    # Make sure we do not accidentally upcast data types.
     if out_type is None:
         out_dtype = scalar.upcast(*[v.dtype for v in (num + denum)])
     else:
@@ -6731,8 +6737,8 @@ def local_log_erfc(node):
 # ([y*]exp(-(x**2)))/erfc(x) # The y* is optional
 # ([y*]exp(x**2))/erfc(-x) => [y*](when x>threashold,
 #                            sqrt(pi)*-x/(1-1/(2*x**2)+3/(4*x**4)-15/(8*x**6)))
-# for float64: threshold=26.63 see at the end of the fct for the explaination
-# for float32: threshold=9.3 see at the end of the fct for the explaination
+# for float64: threshold=26.63 see at the end of the fct for the explanation
+# for float32: threshold=9.3 see at the end of the fct for the explanation
 # TODO: remove the contraint that there are only 2 inputs to exp(x**2)
 #      is the second.
 # TODO: at the test point 10 in float32, there is instability in the original
@@ -7479,25 +7485,14 @@ def local_useless_composite(node):
 # # Remove consider_constant #
 # ############################
 
+
 # Although the ops ConsiderConstant, ZeroGrad and DisconnectedGrad
 # just returns the input, it should be removed from the graph to
-# make sure all possible optimizations can be applied.
-register_canonicalize(gof.OpRemove(theano.gradient.consider_constant_),
-                      'fast_compile', 'fast_run',
-                      name='remove_consider_constant')
-
-register_canonicalize(gof.OpRemove(theano.gradient.zero_grad_),
-                      'fast_compile', 'fast_run', name='remove_zero_grad')
-
-register_canonicalize(gof.OpRemove(theano.gradient.disconnected_grad_),
-                      'fast_compile', 'fast_run',
-                      name='remove_disconnected_grad')
-
-
-@register_canonicalize
-@gof.local_optimizer([theano.gradient.GradClip])
-def local_grad_clip(node):
-    if isinstance(node.op, theano.gradient.GradClip):
+@register_canonicalize('fast_compile')
+@register_useless('fast_compile')
+@gof.local_optimizer(None)
+def local_view_op(node):
+    if isinstance(node.op, theano.compile.ops.ViewOp):
         return node.inputs
 
 
@@ -7540,3 +7535,37 @@ def local_merge_alloc(node):
                     dim_outer, T.eq(dim_outer, dim_inner))
         i += 1
     return [T.alloc(inputs_inner[0], *dims_outer)]
+
+
+@register_useless('fast_compile')
+@gof.local_optimizer([TopKOp])
+def local_useless_topk(node):
+    """
+    TopKOp generates two outputs by default
+    This opt removes the useless ones
+
+    """
+    op = node.op
+    if not isinstance(op, TopKOp):
+        return
+    if not (op.return_values and op.return_indices):
+        return False
+
+    x, k = node.inputs
+    ret_val = bool(node.outputs[0].clients)
+    ret_idx = bool(node.outputs[1].clients)
+
+    if not (ret_val ^ ret_idx):
+        # both true -> nothing to remove
+        # both false -> let pruner handle
+        return False
+
+    old_output = node.outputs[ret_idx]
+    new_output = TopKOp(
+        axis=op.axis,
+        sorted=op.sorted,
+        idx_dtype=op.idx_dtype,
+        return_values=ret_val,
+        return_indices=ret_idx)(x, k)
+    copy_stack_trace(node.outputs[0], new_output)
+    return {old_output: new_output}

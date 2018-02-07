@@ -7,7 +7,7 @@ import numpy as np
 import theano
 from theano.compat import PY3
 from theano import config
-from theano.compile import DeepCopyOp
+from theano.compile import DeepCopyOp, Rebroadcast, ViewOp
 from theano.misc.pkl_utils import CompatUnpickler
 
 # Disabled for now
@@ -21,16 +21,46 @@ import pygpu
 
 
 def test_deep_copy():
-    a = rand_gpuarray(20, dtype='float32')
-    g = GpuArrayType(dtype='float32', broadcastable=(False,))('g')
+    for dtype in ['float16', 'float32']:
+        a = rand_gpuarray(20, dtype=dtype)
+        g = GpuArrayType(dtype=dtype, broadcastable=(False,))('g')
 
-    f = theano.function([g], g)
+        f = theano.function([g], g)
 
-    assert isinstance(f.maker.fgraph.toposort()[0].op, DeepCopyOp)
+        assert isinstance(f.maker.fgraph.toposort()[0].op, DeepCopyOp)
 
-    res = f(a)
+        res = f(a)
 
-    assert GpuArrayType.values_eq(res, a)
+        assert GpuArrayType.values_eq(res, a)
+
+
+def test_view():
+    for dtype in ['float16', 'float32']:
+        a = rand_gpuarray(20, dtype=dtype)
+        g = GpuArrayType(dtype=dtype, broadcastable=(False,))('g')
+
+        m = theano.compile.get_default_mode().excluding("local_view_op")
+        f = theano.function([g], ViewOp()(g), mode=m)
+
+        assert isinstance(f.maker.fgraph.toposort()[0].op, ViewOp)
+
+        res = f(a)
+
+        assert GpuArrayType.values_eq(res, a)
+
+
+def test_rebroadcast():
+    for dtype in ['float16', 'float32']:
+        a = rand_gpuarray(1, dtype=dtype)
+        g = GpuArrayType(dtype=dtype, broadcastable=(False,))('g')
+
+        f = theano.function([g], Rebroadcast((0, True))(g))
+
+        assert isinstance(f.maker.fgraph.toposort()[0].op, Rebroadcast)
+
+        res = f(a)
+
+        assert GpuArrayType.values_eq(res, a)
 
 
 def test_values_eq_approx():
@@ -45,10 +75,11 @@ def test_values_eq_approx():
 
 
 def test_specify_shape():
-    a = rand_gpuarray(20, dtype='float32')
-    g = GpuArrayType(dtype='float32', broadcastable=(False,))('g')
-    f = theano.function([g], theano.tensor.specify_shape(g, [20]))
-    f(a)
+    for dtype in ['float16', 'float32']:
+        a = rand_gpuarray(20, dtype=dtype)
+        g = GpuArrayType(dtype=dtype, broadcastable=(False,))('g')
+        f = theano.function([g], theano.tensor.specify_shape(g, [20]))
+        f(a)
 
 
 def test_filter_float():
@@ -59,6 +90,22 @@ def test_filter_float():
         theano.function([], updates=[(s, 0.0)])
     finally:
         del theano.compile.sharedvalue.shared.constructors[-1]
+
+
+def test_filter_variable():
+    # Test that filter_variable accepts more restrictive broadcast
+    gpu_row = GpuArrayType(dtype=theano.config.floatX,
+                           broadcastable=(True, False))
+    gpu_matrix = GpuArrayType(dtype=theano.config.floatX,
+                              broadcastable=(False, False))
+    r = gpu_row()
+    m = gpu_matrix.filter_variable(r)
+    assert m.type == gpu_matrix
+
+    # On CPU as well
+    r = theano.tensor.row()
+    m = gpu_matrix.filter_variable(r)
+    assert m.type == gpu_matrix
 
 
 def test_gpuarray_shared_scalar():
@@ -72,7 +119,7 @@ def test_gpuarray_shared_scalar():
 
 
 def test_unpickle_gpuarray_as_numpy_ndarray_flag0():
-    """ Test when pygpu isn't there for unpickle are in test_pickle.py"""
+    # Test when pygpu isn't there for unpickle are in test_pickle.py
     oldflag = config.experimental.unpickle_gpu_on_cpu
     config.experimental.unpickle_gpu_on_cpu = False
 
@@ -92,7 +139,7 @@ def test_unpickle_gpuarray_as_numpy_ndarray_flag0():
         config.experimental.unpickle_gpu_on_cpu = oldflag
 
 # These tests are disabled because they expect the impossible
-"""
+'''
 @makeSharedTester(
     shared_constructor_=gpuarray_shared_constructor,
     dtype_=theano.config.floatX,
@@ -131,7 +178,7 @@ class test_shared_options(object):
                                       cls=pygpu._array.ndgpuarray))
 class test_shared_options2(object):
     pass
-"""
+'''
 
 
 def test_set_value_non_contiguous():

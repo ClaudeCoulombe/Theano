@@ -12,11 +12,12 @@ import numbers
 
 import theano
 from theano.compat import izip
-from theano.configparser import config
+from theano import config
 from theano import gof
-from theano.gof import Apply, Constant, Op, Variable
+from theano.gof import Apply, Constant, Op, Variable, ParamsType
 from theano.gof.type import Generic
 
+from theano.scalar import int32 as int32_t
 from theano.tensor import elemwise
 from theano.tensor.var import (AsTensorError, TensorVariable,
                                TensorConstant, TensorConstantSignature,
@@ -29,6 +30,8 @@ from theano import compile, printing
 from theano.printing import pprint, min_informative_str
 # For history
 from theano.compile import Rebroadcast, Shape, shape
+from theano.scalar import int32
+
 
 # We use these exceptions as well.
 import theano.scalar.sharedvar
@@ -181,8 +184,9 @@ def as_tensor_variable(x, name=None, ndim=None):
 
     if isinstance(x, bool):
         raise AsTensorError(
-            "Cannot cast True or False as a tensor variable. Please use 1 or "
-            "0. This error might be caused by using the == operator on "
+            "Cannot cast True or False as a tensor variable. Please use "
+            "np.array(True) or np.array(False) if you need these constants. "
+            "This error might be caused by using the == operator on "
             "Variables. v == w does not do what you think it does, "
             "use theano.tensor.eq(v, w) instead.")
 
@@ -446,6 +450,8 @@ def get_scalar_constant_value(orig_v, elemwise=True,
                 max_recur > 0):
             max_recur -= 1
             if isinstance(v.owner.op, (Alloc, DimShuffle, Rebroadcast,
+                                       # outputguard is only used in debugmode but we
+                                       # keep it here to avoid problems with old pickels.
                                        compile.ops.OutputGuard,
                                        compile.DeepCopyOp)):
                 v = v.owner.inputs[0]
@@ -895,6 +901,62 @@ def tensor5(name=None, dtype=None):
 tensor5s, ftensor5s, dtensor5s, itensor5s, ltensor5s = _multi(
     tensor5, ftensor5, dtensor5, itensor5, ltensor5)
 
+ctensor6 = TensorType('complex64', ((False,) * 6))
+ztensor6 = TensorType('complex128', ((False,) * 6))
+ftensor6 = TensorType('float32', ((False,) * 6))
+dtensor6 = TensorType('float64', ((False,) * 6))
+btensor6 = TensorType('int8', ((False,) * 6))
+wtensor6 = TensorType('int16', ((False,) * 6))
+itensor6 = TensorType('int32', ((False,) * 6))
+ltensor6 = TensorType('int64', ((False,) * 6))
+
+
+def tensor6(name=None, dtype=None):
+    """Return a symbolic 6-D variable.
+
+    Parameters
+    ----------
+    dtype: numeric type
+        None means to use theano.config.floatX.
+    name
+        A name to attach to this variable.
+
+    """
+    if dtype is None:
+        dtype = config.floatX
+    type = TensorType(dtype, (False,) * 6)
+    return type(name)
+tensor6s, ftensor6s, dtensor6s, itensor6s, ltensor6s = _multi(
+    tensor6, ftensor6, dtensor6, itensor6, ltensor6)
+
+ctensor7 = TensorType('complex64', ((False,) * 7))
+ztensor7 = TensorType('complex128', ((False,) * 7))
+ftensor7 = TensorType('float32', ((False,) * 7))
+dtensor7 = TensorType('float64', ((False,) * 7))
+btensor7 = TensorType('int8', ((False,) * 7))
+wtensor7 = TensorType('int16', ((False,) * 7))
+itensor7 = TensorType('int32', ((False,) * 7))
+ltensor7 = TensorType('int64', ((False,) * 7))
+
+
+def tensor7(name=None, dtype=None):
+    """Return a symbolic 7-D variable.
+
+    Parameters
+    ----------
+    dtype: numeric type
+        None means to use theano.config.floatX.
+    name
+        A name to attach to this variable.
+
+    """
+    if dtype is None:
+        dtype = config.floatX
+    type = TensorType(dtype, (False,) * 7)
+    return type(name)
+tensor7s, ftensor7s, dtensor7s, itensor7s, ltensor7s = _multi(
+    tensor7, ftensor7, dtensor7, itensor7, ltensor7)
+
 
 Tensor = TensorType
 
@@ -966,6 +1028,53 @@ def _pack(x):
         return list(x)
     except TypeError:
         return [x]
+
+
+def check_and_normalize_axes(x, axis):
+    """
+    Check axes, normalize and convert them to a Python list of integers.
+    Return an empty list if argument is None.
+
+    Parameters
+    ----------
+    x: Tensor variable
+    axis = Integer, tuple or list of integers
+
+    Returns
+    -------
+    axis: list of integers
+    """
+    x = as_tensor_variable(x)
+    if axis is None:
+        axis = []
+    elif (isinstance(axis, (integer_types, np.integer)) or
+            (isinstance(axis, np.ndarray) and axis.ndim == 0)):
+                axis = [int(axis)]
+    elif isinstance(axis, (tuple, list, np.ndarray)):
+        axis = [int(i) for i in axis]
+    elif isinstance(axis, Variable):
+        if NoneConst.equals(axis):
+            axis = []
+        elif not isinstance(axis, TensorConstant):
+            raise TypeError("Computation needs a constant axis. Got %s" % axis)
+        else:
+            assert axis.dtype in integer_dtypes
+            if (isinstance(axis.data, (integer_types, np.integer)) or
+                    (isinstance(axis.data, np.ndarray) and axis.data.ndim == 0)):
+                        axis = [int(axis.data)]
+            elif isinstance(axis.data, (list, np.ndarray)):
+                axis = [int(i) for i in axis.data]
+    else:
+        raise TypeError("Axis must be an integer, tuple, list of integers or a TensorVariable. Got %s" % axis)
+    if len(axis) > 0:
+        for i in range(len(axis)):
+            if axis[i] < 0:
+                axis[i] += x.type.ndim
+            if axis[i] < 0 or axis[i] >= x.type.ndim:
+                raise ValueError("Computation needs a valid axis number for %d-D tensor. Got %d" % (x.type.ndim, axis[i]))
+        axis = list(set(axis))
+        axis.sort()
+    return axis
 
 
 #########################
@@ -1171,6 +1280,7 @@ class MaxAndArgmax(Op):
     E_axis = 'invalid axis'
     params_type = Generic()
     __props__ = ('axis',)
+    _f16_ok = True
 
     def __init__(self, axis):
         assert isinstance(axis, list)
@@ -1378,60 +1488,31 @@ class Argmax(Op):
     nin = 2  # tensor, axis
     nout = 1
     E_axis = 'invalid axis'
-    __props__ = ()
+    __props__ = ('axis',)
+    _f16_ok = True
+
+    params_type = ParamsType(c_axis=scal.int64)
+
+    def __init__(self, axis):
+        if axis is not None:
+            axis = tuple(axis)
+        self.axis = tuple(axis)
+
+    def get_params(self, node):
+        if self.axis is not None and len(self.axis) == 1:
+            c_axis = np.int64(self.axis[0])
+        else:
+            # The value here doesn't matter, it won't be used
+            c_axis = np.int64(-1)
+        return self.params_type.get_params(c_axis=c_axis)
 
     def make_node(self, x, axis=None):
         x = _as_tensor_variable(x)
-
-        if isinstance(axis, (integer_types, np.integer)):
-            axis = [int(axis)]
-        elif isinstance(axis, np.ndarray) and axis.ndim == 0:
-            axis = [int(axis)]
-        elif isinstance(axis, (tuple, list, np.ndarray)):
-            axis = [int(a) for a in axis]
-            if axis == list(range(x.type.ndim)):
-                axis = None
-        elif isinstance(axis, Variable):
-            if NoneConst.equals(axis):
-                axis = None
-            elif not isinstance(axis, TensorConstant):
-                raise TypeError(
-                    "Argmax needs a constant axis. Got %s" % axis)
-            else:
-                assert axis.dtype in integer_dtypes
-                if isinstance(axis.data, (integer_types, np.integer)) or \
-                   (isinstance(axis.data, np.ndarray) and
-                        axis.data.ndim == 0):
-                    axis = [int(axis.data)]
-                elif isinstance(axis.data, (list, np.ndarray)):
-                    axis = [int(i) for i in axis.data]
-
-        # Make axis entries non-negative, and sort them
-        if isinstance(axis, list):
-            for idx in xrange(len(axis)):
-                if axis[idx] < 0:
-                    axis[idx] += x.type.ndim
-            axis.sort()
-
-        # Verify that axes are valid
-        all_axes = []
-        if isinstance(axis, list):
-            for ax in axis:
-                if ax < 0 or ax >= x.type.ndim:
-                    raise ValueError(
-                        'Invalid axis: %s (the number of dimensions of the '
-                        'input is: %s)' % (ax, x.type.ndim))
-                if ax not in all_axes:
-                    all_axes.append(ax)
-        else:
+        if self.axis is None:
             all_axes = list(range(x.ndim))
-
-        if axis is None or axis == list(range(x.type.ndim)):
-            axis = NoneConst.clone()
         else:
-            axis = _as_tensor_variable(all_axes)
-            assert axis.ndim == 1
-        inputs = [x, axis]
+            all_axes = self.axis
+        inputs = [x]
 
         # We keep the original broadcastable flags for dimensions on which
         # we do not perform the argmax.
@@ -1440,13 +1521,16 @@ class Argmax(Op):
         outputs = [tensor('int64', broadcastable, name='argmax')]
         return Apply(self, inputs, outputs)
 
-    def perform(self, node, inp, outs):
-        x, axes = inp
+    def prepare_node(self, node, storage_map, compute_map, impl):
+        if len(node.inputs) == 2:
+            raise ValueError('You are trying to compile a graph with an old Argmax node.  Either reoptimize your graph or rebuild it to get the new node format.')
+
+    def perform(self, node, inp, outs, params):
+        x, = inp
+        axes = self.axis
         max_idx, = outs
         if axes is None:
             axes = tuple(range(x.ndim))
-        else:
-            axes = tuple(int(ax) for ax in axes)
 
         # Numpy does not support multiple axes for argmax
         # Work around
@@ -1464,18 +1548,18 @@ class Argmax(Op):
                                      dtype='int64')
 
     def c_code(self, node, name, inp, out, sub):
-        x, axis = inp
+        x, = inp
         argmax, = out
         fail = sub["fail"]
-        if NoneConst.equals(node.inputs[1]):
+        params = sub["params"]
+        if self.axis is None:
             axis_code = "axis = NPY_MAXDIMS;"
         else:
-            assert node.inputs[1].ndim == 1
-            # Fall back to perform() if there are multiple axes
-            if len(node.inputs[1].data) > 1:
+            if len(self.axis) > 1:
                 raise NotImplementedError()
+            # params is only used here for now
             axis_code = """
-            axis = ((dtype_%(axis)s*)PyArray_DATA(%(axis)s))[0];
+            axis = %(params)s->c_axis;
             if(axis > PyArray_NDIM(%(x)s)-1 || axis < -PyArray_NDIM(%(x)s)){
                 PyErr_SetString(PyExc_ValueError,
                 "Argmax, bad axis argument");
@@ -1510,28 +1594,20 @@ class Argmax(Op):
         return ret % locals()
 
     def c_code_cache_version(self):
-        return (0,)
+        return (1,)
 
     def infer_shape(self, node, shapes):
-        ishape, axis_shape = shapes
-        axis = node.inputs[1]
-        if axis.data is None:
+        ishape, = shapes
+        if self.axis is None:
             return [()]
         rval = tuple([ishape[i] for (i, b) in enumerate(
-            node.inputs[0].type.broadcastable) if i not in axis.data])
+            node.inputs[0].type.broadcastable) if i not in self.axis])
         return [rval]
 
     def grad(self, inp, grads):
-        x, axis = inp
+        x, = inp
 
-        axis_grad = grad_undefined(
-            self, 1, axis,
-            "argmax is not defined for non-integer axes so"
-            " argmax(x, axis+eps) is undefined")
-
-        return [x.zeros_like(), axis_grad]
-
-_argmax = Argmax()
+        return [x.zeros_like()]
 
 
 def makeKeepDims(x, y, axis):
@@ -1591,36 +1667,9 @@ def max_and_argmax(a, axis=None, keepdims=False):
     # Check axis and convert it to a Python list of integers.
     # Axis will be used as an op param of MaxAndArgmax.
     a = as_tensor_variable(a)
-    if axis is None:
-        axis = list(range(a.type.ndim))
-    elif (isinstance(axis, (integer_types, np.integer)) or
-            (isinstance(axis, np.ndarray) and axis.ndim == 0)):
-        axis = [int(axis)]
-    elif isinstance(axis, (tuple, list, np.ndarray)):
-        axis = [int(i) for i in axis]
-    elif isinstance(axis, Variable):
-        if NoneConst.equals(axis):
-            axis = list(range(a.type.ndim))
-        elif not isinstance(axis, TensorConstant):
-            raise TypeError("max and argmax computation needs a constant axis. Got %s" % axis)
-        else:
-            assert axis.dtype in integer_dtypes
-            if (isinstance(axis.data, (integer_types, np.integer)) or
-                    (isinstance(axis.data, np.ndarray) and axis.data.ndim == 0)):
-                axis = [int(axis.data)]
-            elif isinstance(axis.data, (list, np.ndarray)):
-                axis = [int(i) for i in axis.data]
+    axis = check_and_normalize_axes(a, axis)
     if len(axis) == 0:
         axis = list(range(a.type.ndim))
-    else:
-        for i in range(len(axis)):
-            if axis[i] < 0:
-                axis[i] += a.type.ndim
-            if axis[i] < 0 or axis[i] >= a.type.ndim:
-                raise ValueError("max and argmax computation needs a valid axis number for %d-D tensor. Got %d"
-                                 % (a.type.ndim, axis[i]))
-        axis = list(set(axis))
-        axis.sort()
     out, argout = MaxAndArgmax(axis)(a)
 
     if keepdims:
@@ -1715,6 +1764,12 @@ def min(x, axis=None, keepdims=False):
     str_x_type = str(x.dtype)
     if str_x_type.startswith('float') or str_x_type in int_dtypes:
         return -max(-x, axis=axis, keepdims=keepdims)
+    elif str_x_type in uint_dtypes:
+        itype = np.iinfo(x.dtype)
+        max_val = np.array(itype.max, dtype=itype.dtype)
+        return max_val - max(max_val - x, axis=axis, keepdims=keepdims)
+    elif str_x_type == 'bool':
+        return ~max(~x, axis=axis, keepdims=keepdims)
     else:
         # Be careful about unsigned integers, complex
         raise NotImplementedError()
@@ -1740,6 +1795,11 @@ def argmin(x, axis=None, keepdims=False):
     str_x_type = str(x.dtype)
     if str_x_type.startswith('float') or str_x_type in int_dtypes:
         return argmax(-x, axis=axis, keepdims=keepdims)
+    elif str_x_type in uint_dtypes:
+        itype = np.iinfo(x.dtype)
+        return argmax(itype.max - x, axis=axis, keepdims=keepdims)
+    elif str_x_type == 'bool':
+        return argmax(~x, axis=axis, keepdims=keepdims)
     else:
         # Be careful about unsigned integers, complex
         raise NotImplementedError()
@@ -1965,7 +2025,7 @@ def isclose(a, b, rtol=1.e-5, atol=1.e-8, equal_nan=False):
     nans_or_infs = bitwise_or(nans, infs)
 
     # close is now an array of 0's except where elements are not nan or inf
-    # and are withing the tolerance.
+    # and are within the tolerance.
     close = bitwise_and(close_prelim, bitwise_not(nans_or_infs))
 
     # deal with signed inf values. this will make an array inf_eq of 0's
@@ -2152,6 +2212,67 @@ def sqr(a):
 square = sqr
 
 
+def cov(m, y=None, rowvar=True, bias=False, ddof=None, fweights=None, aweights=None):
+    """Calculate the covariance matrix.
+    Covariance indicates the level to which two variables vary together.
+    If we examine N-dimensional samples, :math:`m = [x_1, x_2, ... x_N]^T`,
+    then the covariance matrix element :math:`C_{ij}` is the covariance of
+    :math:`x_i` and :math:`x_j`. The element :math:`C_{ii}` is the variance
+    of :math:`x_i`. Code and docstring ported from numpy.
+    ----------
+    m : array_like
+        A 2-D array containing multiple variables and observations.
+        Each row of `m` represents a variable, and each column is
+        observations of all those variables.
+    y : array_like, optional
+        An additional set of variables and observations. `y` has the same form
+        as that of `m`.
+    rowvar : bool, optional
+        If `rowvar` is True (default), then each row represents a
+        variable, with observations in the columns. Otherwise, the relationship
+        is transposed: each column represents a variable, while the rows
+        contain observations.
+    bias : bool, optional
+        Default normalization (False) is by ``(N - 1)``, where ``N`` is the
+        number of observations given (unbiased estimate). If `bias` is True, then
+        normalization is by ``N``. These values can be overridden by using the
+        keyword ``ddof``.
+    ddof : int, optional
+        If not ``None`` the default value implied by `bias` is overridden.
+        The default value is ``None``.
+    Returns
+    -------
+    out : The covariance matrix of the variables.
+    """
+
+    if fweights is not None:
+        raise NotImplementedError('fweights are not implemented')
+    if aweights is not None:
+        raise NotImplementedError('aweights are not implemented')
+
+    if not rowvar and m.shape[0] != 1:
+        m = m.T
+
+    if y is not None:
+        if not rowvar and y.shape[0] != 1:
+            y = y.T
+        m = theano.tensor.concatenate((m, y), axis=0)
+
+    if ddof is None:
+        if not bias:
+            ddof = 1
+        else:
+            ddof = 0
+
+    # Determine the normalization
+    fact = m.shape[1] - ddof
+
+    m -= m.mean(axis=1, keepdims=1)
+    c = m.dot(m.T)
+    c *= theano.tensor.constant(1) / fact
+    return c.squeeze()
+
+
 @_scal_elemwise
 def sqrt(a):
     """square root of a"""
@@ -2270,6 +2391,11 @@ def gammaln(a):
 @_scal_elemwise
 def psi(a):
     """derivative of log gamma function"""
+
+
+@_scal_elemwise
+def tri_gamma(a):
+    """second derivative of the log gamma function"""
 
 
 @_scal_elemwise
@@ -4715,20 +4841,19 @@ def vertical_stack(*args):
 
 class Reshape(Op):
     """Perform a reshape operation of the input x to the new shape shp.
-
     The number of dimensions to which to reshape to (ndim) must be
     known at graph build time.
-
     """
     view_map = {0: [0]}  # output 0 is potentially aliased to inputs [0]
     _f16_ok = True
 
     check_input = False
     __props__ = ("ndim",)
+    params_type = ParamsType(ndim=int32)
     # name does not participate because it doesn't affect computations
 
     def __init__(self, ndim, name=None):
-        self.ndim = ndim
+        self.ndim = int(ndim)
         if ndim < 0:
             raise ValueError("The output dimensions after reshape must be 0 or greater")
         assert name is None, 'name attribute for Reshape has been deprecated'
@@ -4768,7 +4893,7 @@ class Reshape(Op):
                     pass
             return gof.Apply(self, [x, shp], [tensor(x.type.dtype, bcasts)])
 
-    def perform(self, node, inp, out_):
+    def perform(self, node, inp, out_, params):
         x, shp = inp
         out, = out_
         if (len(shp) != self.ndim):
@@ -4865,22 +4990,22 @@ class Reshape(Op):
                            for i in xrange(self.ndim)])]
 
     def c_code_cache_version(self):
-        return (7,)
+        return (8,)
 
     def c_code(self, node, name, inputs, outputs, sub):
         if isinstance(node.inputs[0], TensorVariable):
             x, shp = inputs
             z, = outputs
-            new_ndim = self.ndim
             sdtype = node.inputs[1].type.dtype_specs()[1]
             fail = sub['fail']
+            params = sub['params']
             return """
             assert (PyArray_NDIM(%(shp)s) == 1);
-            npy_intp new_dims[%(new_ndim)s];
+            npy_intp new_dims[%(params)s->ndim];
             PyArray_Dims newshape;
             newshape.ptr = new_dims;
-            newshape.len = %(new_ndim)s;
-            for (int ii = 0; ii < %(new_ndim)s; ++ii)
+            newshape.len = %(params)s->ndim;
+            for (int ii = 0; ii < %(params)s->ndim; ++ii)
             {
                 // -- We do not want an explicit cast here. the shp can be any
                 // -- int* dtype. The compiler will explicitly upcast it, but
@@ -4891,8 +5016,7 @@ class Reshape(Op):
                         ii * PyArray_STRIDES(%(shp)s)[0]))[0];
             }
             Py_XDECREF(%(z)s);
-            %(z)s = (PyArrayObject *) PyArray_Newshape(%(x)s, &newshape,
-                NPY_CORDER);
+            %(z)s = (PyArrayObject *) PyArray_Newshape(%(x)s, &newshape, NPY_CORDER);
             if (!%(z)s)
             {
                 //The error message should have been set by PyArray_Newshape
@@ -5351,6 +5475,7 @@ class ARange(Op):
 
         inputs = [start, stop, step]
         outputs = [tensor(self.dtype, (False,))]
+
         return Apply(self, inputs, outputs)
 
     @theano.configparser.change_flags(warn_float64='ignore')
@@ -5402,17 +5527,26 @@ class ARange(Op):
 
         return [[True], [False], [True]]
 
-    def grad(self, inputs, grads):
+    def L_op(self, inputs, outputs, grads):
         start, stop, step = inputs
         gz, = grads
-        # start and step affect the output values
+        # `start` and `step` affect the output values
         # but the outputs are integers so there's
-        # no gradient through them
-        # stop does not affect the output values,
-        # just the output shape, so it is disconnected
-        return [start.zeros_like(),
-                DisconnectedType()(),
-                step.zeros_like()]
+        # no gradient through them.
+        # When they are not integers, the gradients are
+        # as expressed below.
+        # `stop` does not affect the output values,
+        # just the output shape, so it is disconnected.
+
+        if self.dtype in discrete_dtypes:
+            return [start.zeros_like(dtype=config.floatX),
+                    DisconnectedType()(),
+                    step.zeros_like(dtype=config.floatX)]
+        else:
+            num_steps_taken = outputs[0].shape[0]
+            return [gz.sum(),
+                    DisconnectedType()(),
+                    (gz * arange(num_steps_taken, dtype=self.dtype)).sum()]
 
     def R_op(self, inputs, eval_points):
         return [None]
@@ -5867,53 +6001,6 @@ class Dot(Op):
         if eval_points[0] is None and eval_points[1] is None:
             return [None]
 
-        debugger_available = config.compute_test_value != 'off'
-
-        if debugger_available:
-            try:
-                iv0 = gof.op.get_test_value(inputs[0])
-            except AttributeError:
-                gof.op.missing_test_message(
-                    'first input passed to Dot.R_op has no test value')
-                debugger_available = False
-
-            try:
-                iv1 = gof.op.get_test_value(inputs[1])
-            except AttributeError:
-                gof.op.missing_test_message(
-                    'second input passed to Dot.R_op has no test value')
-                debugger_available = False
-
-            if eval_points[0]:
-                try:
-                    ev0 = gof.op.get_test_value(eval_points[0])
-                except AttributeError:
-                    gof.op.missing_test_message(
-                        'first eval point passed to Dot.R_op '
-                        'has no test value')
-                    debugger_available = False
-            if eval_points[1]:
-                try:
-                    ev1 = gof.op.get_test_value(eval_points[1])
-                except AttributeError:
-                    gof.op.missing_test_message(
-                        'second eval point passed to Dot.R_op '
-                        'has no test value')
-                    debugger_available = False
-
-        if debugger_available:
-            input_values = [iv0, iv1]
-            eval_point_values = [ev0, ev1]
-
-            for i in xrange(2):
-                if eval_point_values[i] is not None and \
-                   input_values[i].shape != eval_point_values[i].shape:
-                    raise ValueError(
-                        'input ' + str(i) + ' and eval_point ' + str(i) +
-                        ' to Dot.R_op should have the same shape, but '
-                        'their shapes are %s and %s, respectively' % (
-                            str(input_values[i].shape),
-                            str(eval_point_values[i].shape)))
         if eval_points[0]:
             t1 = self(eval_points[0], inputs[1])
         if eval_points[1]:
@@ -6267,18 +6354,57 @@ del x
 
 
 class ExtractDiag(Op):
-    """Return specified diagonals.
+    """
+    Return specified diagonals.
+
+    If x is 2-D, returns the diagonal of x with the given offset,
+    i.e., the collection of elements of the form x[i, i+offset].
+    If x has more than two dimensions, then the axes specified by
+    axis1 and axis2 are used to determine the 2-D sub-array whose
+    diagonal is returned. The shape of the resulting array can be
+    determined by removing axis1 and axis2 and appending an index
+    to the right equal to the size of the resulting diagonals.
 
     Parameters
     ----------
-    x
-        A tensor variable with x.ndim >= 2.
+    x: A tensor variable with x.ndim >= 2.
+
+    offset: Offset of the diagonal from the main diagonal.
+        Can be positive or negative.
+        Defaults to main diagonal (0).
+
+    axis1: Axis to be used as the first axis of the 2-D
+        sub-arrays from which the diagonals should be taken.
+        Defaults to first axis (0).
+
+    axis2: Axis to be used as the second axis of the 2-D
+        sub-arrays from which the diagonals should be taken.
+        Defaults to second axis (1).
+
+
 
     Returns
     -------
-    vector
-        A vector representing the diagonal elements.
+    array_of_diagonals:
+        If x is 2-D, a 1-D array of the same type as a
+        containing the diagonal is returned.
+        If the dimension of x is greater than two, then an
+        array of diagonals is returned, "packed" from left-most
+        dimension to right-most (e.g., if x is 3-D, then the
+        diagonals are "packed" along rows).
 
+
+
+    Raises
+    ------
+    ValueError
+        If the dimension of x is less than 2.
+
+
+    See Also
+    --------
+    numpy.diagonal:
+        https://docs.scipy.org/doc/numpy-dev/reference/generated/numpy.diagonal.html
     """
     __props__ = ("offset", "axis1", "axis2", "view")
 
@@ -6319,14 +6445,12 @@ class ExtractDiag(Op):
         (gz,) = gout
 
         if x.ndim == 2:
-            # The following code is moved from tensor.nlinalg.ExtractDiag, only
-            # works for matrices.
             x = theano.tensor.zeros_like(x)
             xdiag = theano.tensor.AllocDiag(offset=self.offset)(gz)
             return [theano.tensor.set_subtensor(
                 x[:xdiag.shape[0], :xdiag.shape[1]], xdiag)]
         else:
-            warnings.warn("gradient of theano.tensor.nlinalg.ExtractDiag only"
+            warnings.warn("gradient of theano.tensor.basic.ExtractDiag only"
                           "works for matrices.")
             return [grad_not_implemented(self, 0, x)]
 
@@ -6346,6 +6470,26 @@ class ExtractDiag(Op):
             diag_size = minimum(dim1, dim2)
         out_shape.append(diag_size)
         return [tuple(out_shape)]
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        if self.view and not numpy_diagonal_return_view:
+            warnings.warn("View will forced to False. ExtractDiag property view is "
+                          "set to True but numpy version %s and prior versions of "
+                          "numpy.diagonal() do not return a view. Update "
+                          "numpy to use ExtractDiag(view=True)" %
+                          np.version.version)
+            self.view = False
+
+        if self.view:
+            self.view_map = {0: [0]}
+
+        if "offset" not in state:
+            self.offset = 0
+        if "axis1" not in state:
+            self.axis1 = 0
+        if "axis2" not in state:
+            self.axis2 = 1
 
 
 def diagonal(a, offset=0, axis1=0, axis2=1):
@@ -6384,8 +6528,18 @@ class AllocDiag(Op):
 
     Parameters
     ----------
-    offset : int
-        Indicates which diagonal to put `x` into. Defaults to `0`.
+    axis1: Axis to be used as the first axis of the 2-D
+        sub-arrays to which the diagonals will be allocated.
+        Defaults to first axis (0).
+
+    axis2: Axis to be used as the second axis of the 2-D
+        sub-arrays to which the diagonals will be allocated.
+        Defaults to second axis (1).
+
+    offset: Offset of the diagonal from the main diagonal defined by `axis1`
+        and `axis2`.
+        Can be positive or negative.
+        Defaults to main diagonal (0).
 
     x: symbolic vector
         A tensor vector consists of diagonal values.
@@ -6393,34 +6547,92 @@ class AllocDiag(Op):
     Returns
     -------
     tensor : symbolic tenstor
-        A tensor with passed vector values at its corresponding diagonal.
+        A tensor with passed tensor values at their corresponding diagonals.
 
     """
 
-    __props__ = ("offset", )
-    default_offset = 0
+    __props__ = ("offset", "axis1", "axis2")
 
-    def __init__(self, offset=0):
-        if numpy_diagonal_return_view:
-            self.view_map = {0: [0]}
+    def __init__(self, offset=0, axis1=0, axis2=1):
         self.offset = offset
+        self.axis1 = axis1
+        self.axis2 = axis2
 
     def make_node(self, diag):
         diag = as_tensor_variable(diag)
-        if diag.type.ndim != 1:
-            raise TypeError('data argument must be a vector', diag.type)
-        return Apply(self, [diag], [matrix(dtype=diag.dtype)])
+        if diag.type.ndim < 1:
+            raise ValueError('AllocDiag needs an input with 1 or more '
+                             'dimensions', diag.type)
+        return Apply(
+            self, [diag],
+            [diag.type.__class__(
+                dtype=diag.dtype,
+                broadcastable=[False] * (diag.ndim + 1))()]
+        )
 
     def perform(self, node, inputs, outputs):
+        (x,) = inputs
         (z,) = outputs
-        z[0] = np.diag(inputs[0], self.offset)
+
+        axis1 = np.minimum(self.axis1, self.axis2)
+        axis2 = np.maximum(self.axis1, self.axis2)
+        offset = self.offset
+
+        # Create array with one extra dimension for resulting matrix
+        result_shape = x.shape[:-1] + (x.shape[-1] + abs(offset),) * 2
+        result = np.zeros(result_shape, dtype=x.dtype)
+
+        # Create slice for diagonal in final 2 axes
+        idxs = np.arange(x.shape[-1])
+        diagonal_slice = ((len(result_shape) - 2) * [slice(None)] +
+                          [idxs + np.maximum(0, -offset),
+                           idxs + np.maximum(0, offset)])
+
+        # Fill in final 2 axes with x
+        result[diagonal_slice] = x
+
+        if len(x.shape) > 1:
+            # Re-order axes so they correspond to diagonals at axis1, axis2
+            axes = list(range(len(x.shape[:-1])))
+            last_idx = axes[-1]
+            axes = axes[:axis1] + [last_idx + 1] + axes[axis1:]
+            axes = axes[:axis2] + [last_idx + 2] + axes[axis2:]
+            result = result.transpose(axes)
+
+        z[0] = result
 
     def grad(self, inputs, gout):
         (gz,) = gout
-        return [diagonal(gz, offset=self.offset, axis1=0, axis2=1)]
+        return [diagonal(
+            gz,
+            offset=self.offset,
+            axis1=self.axis1,
+            axis2=self.axis2
+        )]
 
     def infer_shape(self, nodes, shapes):
-        return [(shapes[0][0],) * 2]
+        (x_shape,) = shapes
+        axis1 = np.minimum(self.axis1, self.axis2)
+        axis2 = np.maximum(self.axis1, self.axis2)
+
+        result_shape = list(x_shape[:-1])
+        diag_shape = x_shape[-1] + abs(self.offset)
+        result_shape = result_shape[:axis1] + [diag_shape] + result_shape[axis1:]
+        result_shape = result_shape[:axis2] + [diag_shape] + result_shape[axis2:]
+        return [tuple(result_shape)]
+
+    def __setstate__(self, state):
+        if "view_map" in state:
+            del state["view_map"]
+
+        self.__dict__.update(state)
+
+        if "offset" not in state:
+            self.offset = 0
+        if "axis1" not in state:
+            self.axis1 = 0
+        if "axis2" not in state:
+            self.axis2 = 1
 
 
 def diag(v, k=0):
@@ -6684,12 +6896,17 @@ class Choose(Op):
 class AllocEmpty(gof.Op):
     """Implement Alloc on the cpu, but without initializing memory."""
 
-    __props__ = ("dtype",)
+    __props__ = ("dtype", )
+    params_type = ParamsType(typecode=int32_t)
 
     # specify the type of the data
     def __init__(self, dtype):
         assert isinstance(dtype, str), dtype
         self.dtype = dtype.lower()
+
+    @property
+    def typecode(self):
+        return np.dtype(self.dtype).num
 
     def make_node(self, *shape):
         shape, bcast = alloc_validate_shape(shape)
@@ -6709,22 +6926,22 @@ class AllocEmpty(gof.Op):
         output.tag.nan_guard_mode_check = False
         return Apply(self, shape, [output])
 
-    def debug_perform(self, node, inputs, out_):
-        self.perform(node, inputs, out_)
+    def debug_perform(self, node, inputs, out_, params):
+        self.perform(node, inputs, out_, params)
         out_[0][0].fill(-123456789)
 
-    def perform(self, node, inputs, out_):
+    def perform(self, node, inputs, out_, params):
         out, = out_
         sh = tuple([int(i) for i in inputs])
         if out[0] is None or out[0].shape != sh:
             out[0] = np.empty(sh, dtype=self.dtype)
 
     def c_code(self, node, name, inputs, out_, sub):
-        dtype = "NPY_" + self.dtype.upper()
         out, = out_
         fail = sub['fail']
         shps = inputs
         nd = len(shps)
+        params = sub['params']
         str = "npy_intp dims[%(nd)s];\n" % locals()
         for idx, sh in enumerate(shps):
             str += "dims[%(idx)s] =" \
@@ -6743,7 +6960,7 @@ class AllocEmpty(gof.Op):
             Py_XDECREF(%(out)s);
             %(out)s = (PyArrayObject*)PyArray_EMPTY(%(nd)s,
                                                     dims,
-                                                    %(dtype)s,
+                                                    %(params)s->typecode,
                                                     0);
             if (!%(out)s)
             {
@@ -6758,7 +6975,7 @@ class AllocEmpty(gof.Op):
         return [node.inputs]
 
     def c_code_cache_version(self):
-        return (3,)
+        return (4,)
 
     def do_constant_folding(self, node):
         return False

@@ -10,6 +10,8 @@ import theano
 import theano.tensor as T
 from theano.tests import unittest_tools as utt
 from theano.tensor.nnet import corr, conv
+from theano.tensor.nnet.tests.test_abstract_conv import Grouped_conv_noOptim, TestUnsharedConv
+from theano.tensor.nnet.tests.test_abstract_conv import TestAsymmetricPadding, TestCausalConv
 
 
 class TestCorr2D(utt.InferShapeTester):
@@ -141,11 +143,10 @@ class TestCorr2D(utt.InferShapeTester):
 
     @attr('slow')
     def test_basic(self):
-        """
-        Tests that basic correlations work for odd and even
-        dimensions of image and filter shapes, as well as rectangular
-        images and filters.
-        """
+        # Tests that basic correlations work for odd and even
+        # dimensions of image and filter shapes, as well as rectangular
+        # images and filters.
+
         border_modes = ['valid', 'full', 'half', (1, 1), (2, 1), (1, 2),
                         (3, 3), 1]
         img_shapes = [(2, 2, 3, 3), (3, 2, 8, 8), (3, 2, 7, 5), (3, 2, 7, 5),
@@ -169,9 +170,8 @@ class TestCorr2D(utt.InferShapeTester):
 
     @attr('slow')
     def test_subsample(self):
-        """
-        Tests correlation where subsampling != (1,1)
-        """
+        # Tests correlation where subsampling != (1,1)
+
         self.validate((3, 2, 7, 5), (5, 2, 2, 3), 'valid', subsample=(2, 2))
         self.validate((3, 2, 7, 5), (5, 2, 2, 3), 'valid', subsample=(2, 1))
         self.validate((1, 1, 6, 6), (1, 1, 3, 3), 'valid', subsample=(3, 3))
@@ -191,9 +191,8 @@ class TestCorr2D(utt.InferShapeTester):
         self.validate((1, 1, 6, 6), (1, 1, 3, 3), 1, subsample=(3, 3))
 
     def test_filter_dilation(self):
-        """
-        Tests correlation where filter dilation != (1,1)
-        """
+        # Tests correlation where filter dilation != (1,1)
+
         self.validate((3, 2, 7, 5), (5, 2, 2, 3), 'valid', filter_dilation=(2, 2))
         self.validate((3, 2, 14, 10), (5, 2, 2, 3), 'valid', filter_dilation=(3, 1))
         self.validate((1, 1, 14, 14), (1, 1, 3, 3), 'valid', filter_dilation=(2, 3))
@@ -214,9 +213,8 @@ class TestCorr2D(utt.InferShapeTester):
 
     @attr('slow')
     def test_shape_Constant_tensor(self):
-        """
-        Tests correlation where the {image,filter}_shape is a Constant tensor.
-        """
+        # Tests correlation where the {image,filter}_shape is a Constant tensor.
+
         as_t = T.as_tensor_variable
         border_modes = ['valid', 'full', 'half', (1, 1), (2, 1), (1, 2), (3, 3), 1]
 
@@ -231,18 +229,16 @@ class TestCorr2D(utt.InferShapeTester):
             self.validate(as_t([3, 2, 7, 5]), as_t([5, 2, 2, 3]), border_mode)
 
     def test_invalid_filter_shape(self):
-        """
-        Tests scenario where filter_shape[1] != input_shape[1]
-        """
+        # Tests scenario where filter_shape[1] != input_shape[1]
+
         self.assertRaises(ValueError, self.validate,
                           (3, 2, 8, 8), (4, 3, 5, 5),
                           'valid')
 
     def test_full_mode(self):
-        """
-        Tests basic correlation in full mode and case where filter
-        is larger than the input image.
-        """
+        # Tests basic correlation in full mode and case where filter
+        # is larger than the input image.
+
         self.validate((3, 2, 5, 5), (4, 2, 8, 8), 'full')
 
         def f():
@@ -250,9 +246,8 @@ class TestCorr2D(utt.InferShapeTester):
         self.assertRaises(Exception, f)
 
     def test_wrong_input(self):
-        """
-        Make sure errors are raised when image and kernel are not 4D tensors
-        """
+        # Make sure errors are raised when image and kernel are not 4D tensors
+
         self.assertRaises(Exception, self.validate, (3, 2, 8, 8), (4, 2, 5, 5),
                           'valid', input=T.dmatrix())
         self.assertRaises(Exception, self.validate, (3, 2, 8, 8), (4, 2, 5, 5),
@@ -261,9 +256,8 @@ class TestCorr2D(utt.InferShapeTester):
                           'valid', input=T.dtensor3())
 
     def test_dtype_upcast(self):
-        """
-        Checks dtype upcast for CorrMM methods.
-        """
+        # Checks dtype upcast for CorrMM methods.
+
         def rand(shape, dtype='float64'):
             r = np.asarray(np.random.rand(*shape), dtype=dtype)
             return r * 2 - 1
@@ -414,6 +408,68 @@ class TestCorr2D(utt.InferShapeTester):
         self.validate((3, 2, 7, 5), (5, 2, 2, 3), (1, 2), non_contiguous=True)
         self.validate((3, 2, 7, 5), (5, 2, 2, 3), (2, 1), non_contiguous=True)
         self.validate((3, 2, 7, 5), (5, 2, 2, 3), 2, non_contiguous=True)
+
+
+class TestGroupCorr2d(Grouped_conv_noOptim):
+    mode = theano.compile.get_mode("FAST_RUN").excluding('gpuarray')
+    conv_op = corr.CorrMM
+    conv_gradw_op = corr.CorrMM_gradWeights
+    conv_gradi_op = corr.CorrMM_gradInputs
+
+    def test_graph(self):
+        # define common values  first
+        groups = 3
+        bottom = np.random.rand(3, 6, 5, 5).astype(theano.config.floatX)
+        kern = np.random.rand(9, 2, 3, 3).astype(theano.config.floatX)
+        bottom_sym = T.tensor4('bottom')
+        kern_sym = T.tensor4('kern')
+
+        # grouped convolution graph
+        conv_group = self.conv(num_groups=groups)(bottom_sym, kern_sym)
+        gconv_func = theano.function([bottom_sym, kern_sym], conv_group, mode=self.mode)
+
+        # Graph for the normal hard way
+        kern_offset = kern_sym.shape[0] // groups
+        bottom_offset = bottom_sym.shape[1] // groups
+        split_conv_output = [self.conv()(bottom_sym[:, i * bottom_offset:(i + 1) * bottom_offset, :, :],
+                             kern_sym[i * kern_offset:(i + 1) * kern_offset, :, :, :])
+                             for i in range(groups)]
+        concatenated_output = T.concatenate(split_conv_output, axis=1)
+        conv_func = theano.function([bottom_sym, kern_sym], concatenated_output, mode=self.mode)
+
+        # calculate outputs for each graph
+        gconv_output = gconv_func(bottom, kern)
+        conv_output = conv_func(bottom, kern)
+
+        # compare values
+        utt.assert_allclose(gconv_output, conv_output)
+
+
+class TestUnsharedCorr2d(TestUnsharedConv):
+    if theano.config.mode == "FAST_COMPILE":
+        mode = theano.compile.get_mode("FAST_RUN").excluding('gpuarray')
+    else:
+        mode = None
+    conv2d_op = corr.CorrMM
+    conv2d_gradw_op = corr.CorrMM_gradWeights
+    conv2d_gradi_op = corr.CorrMM_gradInputs
+
+
+class TestAsymmetricCorr(TestAsymmetricPadding):
+    if theano.config.mode == "FAST_COMPILE":
+        mode = theano.compile.get_mode("FAST_RUN").excluding('gpuarray')
+    else:
+        mode = None
+    conv2d_op = corr.CorrMM
+    conv2d_gradw_op = corr.CorrMM_gradWeights
+    conv2d_gradi_op = corr.CorrMM_gradInputs
+
+
+class TestCausalCorr(TestCausalConv):
+    if theano.config.mode == "FAST_COMPILE":
+        mode = theano.compile.get_mode("FAST_RUN").excluding('gpuarray')
+    else:
+        mode = None
 
 
 if __name__ == '__main__':

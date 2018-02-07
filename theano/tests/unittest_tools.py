@@ -4,7 +4,8 @@ from functools import wraps
 import logging
 import sys
 import unittest
-from nose_parameterized import parameterized
+from parameterized import parameterized
+from nose.tools import assert_raises
 
 from six import integer_types
 from six.moves import StringIO
@@ -21,7 +22,7 @@ import numpy as np
 
 import theano
 import theano.tensor as T
-from theano.configparser import config
+from theano import config
 try:
     from nose.plugins.skip import SkipTest
 except ImportError:
@@ -82,7 +83,7 @@ def seed_rng(pseed=None):
 
 def verify_grad(op, pt, n_tests=2, rng=None, *args, **kwargs):
     """
-    Wrapper for tensor/basic.py:verify_grad
+    Wrapper for gradient.py:verify_grad
     Takes care of seeding the random number generator if None is given
     """
     if rng is None:
@@ -352,9 +353,9 @@ class WrongValue(Exception):
         return s + str_diagnostic(self.val1, self.val2, self.rtol, self.atol)
 
 
-def assert_allclose(val1, val2, rtol=None, atol=None):
-    if not T.basic._allclose(val1, val2, rtol, atol):
-        raise WrongValue(val1, val2, rtol, atol)
+def assert_allclose(expected, value, rtol=None, atol=None):
+    if not T.basic._allclose(expected, value, rtol, atol):
+        raise WrongValue(expected, value, rtol, atol)
 
 
 class AttemptManyTimes:
@@ -394,7 +395,7 @@ class AttemptManyTimes:
             current_seed = original_seed
 
             # If the decorator has received only one, unnamed, argument
-            # and that argument has an atribute _testMethodName, it means
+            # and that argument has an attribute _testMethodName, it means
             # that the unit test on which the decorator is used is in a test
             # class. This means that the setup() method of that class will
             # need to be called before any attempts to execute the test in
@@ -445,3 +446,16 @@ class AttemptManyTimes:
                         current_seed = str(int(current_seed) + 1)
 
         return attempt_multiple_times
+
+
+def assertFailure_fast(f):
+    """A Decorator to handle the test cases that are failing when
+    THEANO_FLAGS =cycle_detection='fast'.
+    """
+    if theano.config.cycle_detection == 'fast':
+        def test_with_assert(*args, **kwargs):
+            with assert_raises(Exception):
+                f(*args, **kwargs)
+        return test_with_assert
+    else:
+        return f

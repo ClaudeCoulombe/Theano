@@ -84,7 +84,7 @@ def add_tag_trace(thing, user_line=None):
 
     Notes
     -----
-    We alse use config.traceback.limit for the maximum number of stack level
+    We also use config.traceback.limit for the maximum number of stack level
     we look.
 
     """
@@ -128,8 +128,10 @@ def get_variable_trace_string(v):
             traceback.print_list(v.tag.trace, sio)
         else:
             # Print separate message for each element in the list of
-            # batcktraces
-            for subtr in tr:
+            # backtraces
+            for idx, subtr in enumerate(tr):
+                if len(tr) > 1:
+                    print("trace %d" % idx, file=sio)
                 traceback.print_list(subtr, sio)
     return sio.getvalue()
 
@@ -546,28 +548,28 @@ if PY3:
     import hashlib
 
     def hash_from_code(msg):
-        # hashlib.md5() requires an object that supports buffer interface,
+        # hashlib.sha256() requires an object that supports buffer interface,
         # but Python 3 (unicode) strings don't.
         if isinstance(msg, str):
             msg = msg.encode()
         # Python 3 does not like module names that start with
         # a digit.
-        return 'm' + hashlib.md5(msg).hexdigest()
+        return 'm' + hashlib.sha256(msg).hexdigest()
 
 else:
     import hashlib
 
     def hash_from_code(msg):
         try:
-            return hashlib.md5(msg).hexdigest()
+            return hashlib.sha256(msg).hexdigest()
         except TypeError:
             assert isinstance(msg, np.ndarray)
-            return hashlib.md5(np.getbuffer(msg)).hexdigest()
+            return hashlib.sha256(np.getbuffer(msg)).hexdigest()
 
 
 def hash_from_file(file_path):
     """
-    Return the MD5 hash of a file.
+    Return the SHA256 hash of a file.
 
     """
     with open(file_path, 'rb') as f:

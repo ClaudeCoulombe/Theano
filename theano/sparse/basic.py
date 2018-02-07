@@ -333,6 +333,9 @@ class SparseConstantSignature(tuple):
                 (b.shape == y.shape) and
                 (abs(b - y).sum() < 1e-6 * b.nnz))
 
+    def __ne__(self, other):
+        return not self == other
+
     def __hash__(self):
         (a, b) = self
         return hash(type(self)) ^ hash(a) ^ hash(type(b))
@@ -627,7 +630,7 @@ class CSM(gof.Op):
         return [g_data, DisconnectedType()(), DisconnectedType()(), DisconnectedType()()]
 
     def infer_shape(self, node, shapes):
-        # node.inputs[3] is of lenght as we only support sparse matrix.
+        # node.inputs[3] is of length as we only support sparse matrix.
         return [(node.inputs[3][0], node.inputs[3][1])]
 
 CSC = CSM('csc')
@@ -1330,7 +1333,7 @@ class GetItemScalar(gof.op.Op):
             elif ind.ndim == 0:
                 input_op += [ind]
             else:
-                raise NotImplemented()
+                raise NotImplementedError
 
         return gof.Apply(self, input_op, [tensor.scalar(dtype=x.dtype)])
 
@@ -3603,7 +3606,7 @@ def structured_dot(x, y):
 class StructuredDotGradCSC(gof.Op):
     # Op that produces the grad of StructuredDot.
 
-    # :param a_indices: Matrix indicies
+    # :param a_indices: Matrix indices
     # :param a_indptr: Matrix indptr
     # :param b: Right operand
     # :param g_ab: Accumulated gradient.
@@ -3733,7 +3736,7 @@ sdg_csc = StructuredDotGradCSC()
 class StructuredDotGradCSR(gof.Op):
     # Op that produces the grad of StructuredDot.
 
-    # :param a_indices: Matrix indicies
+    # :param a_indices: Matrix indices
     # :param a_indptr: Matrix indptr
     # :param b: Right operand
     # :param g_ab: Accumulated gradient.

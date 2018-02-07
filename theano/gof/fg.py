@@ -69,7 +69,7 @@ class FunctionGraph(utils.object2):
     variable in the subgraph by another, e.g. replace (x + x).out by (2
     * x).out. This is the basis for optimization in theano.
 
-    This class is also reponsible for verifying that a graph is valid
+    This class is also responsible for verifying that a graph is valid
     (ie, all the dtypes and broadcast patterns are compatible with the
     way the the Variables are used) and for annotating the Variables with
     a .clients field that specifies which Apply nodes use the variable.
@@ -128,7 +128,7 @@ class FunctionGraph(utils.object2):
         clone : boolean
             If true, we will clone the graph. This is useful to remove the
             constant cache problem.
-        update_mapping : dictionnary
+        update_mapping : dictionary
             Mapping between the inputs with updates and the outputs
             corresponding to their updates.
         """
@@ -654,8 +654,9 @@ class FunctionGraph(utils.object2):
         take care of computing dependencies by itself.
 
         """
-        ords = OrderedDict()
         assert isinstance(self._features, list)
+        all_orderings = []
+
         for feature in self._features:
             if hasattr(feature, 'orderings'):
                 orderings = feature.orderings(self)
@@ -664,17 +665,24 @@ class FunctionGraph(utils.object2):
                                     str(feature.orderings) +
                                     ". Nondeterministic object is " +
                                     str(orderings))
+                if len(orderings) > 0:
+                    all_orderings.append(orderings)
+                    for node, prereqs in iteritems(orderings):
+                        if not isinstance(prereqs, (list, OrderedSet)):
+                            raise TypeError(
+                                "prereqs must be a type with a "
+                                "deterministic iteration order, or toposort "
+                                " will be non-deterministic.")
+        if len(all_orderings) == 1:
+            # If there is only 1 ordering, we reuse it directly.
+            return all_orderings[0].copy()
+        else:
+            # If there is more than 1 ordering, combine them.
+            ords = OrderedDict()
+            for orderings in all_orderings:
                 for node, prereqs in iteritems(orderings):
-                    if not isinstance(prereqs, (list, OrderedSet)):
-                        raise TypeError(
-                            "prereqs must be a type with a "
-                            "deterministic iteration order, or toposort "
-                            " will be non-deterministic.")
                     ords.setdefault(node, []).extend(prereqs)
-        # eliminate duplicate prereqs
-        for (node, prereqs) in iteritems(ords):
-            ords[node] = list(OrderedSet(prereqs))
-        return ords
+            return ords
 
     def check_integrity(self):
         """

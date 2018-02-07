@@ -95,6 +95,9 @@ def conv2d(input, filters, image_shape=None, filter_shape=None,
 
     """
 
+    warnings.warn("theano.tensor.nnet.conv.conv2d is deprecated."
+                  " Use theano.tensor.nnet.conv2d instead.")
+
     # accept Constant value for image_shape and filter_shape.
     if image_shape is not None:
         image_shape = list(image_shape)
@@ -829,7 +832,7 @@ class ConvOp(OpenMPOp):
 
         # We copy it to remove the Stride mismatch warning from DEBUG_MODE.
         # The copy make that we return an object with the same stride as the c version.
-        # The copy don't affect the performence during our experience as in that case we
+        # The copy don't affect the performance during our experience as in that case we
         # execute the c version which is much faster.
         if self.dx > 1 or self.dy > 1:
             zz = zz[:, :, 0::self.dx, 0::self.dy].copy()
@@ -854,35 +857,9 @@ class ConvOp(OpenMPOp):
             raise NotImplementedError('todo')
 
         if self.out_mode == 'valid' and (self.dx, self.dy) != (1, 1):
-            # Use the gradient as defined in conv3D, because the implementation
-            # by Conv is slow (about 3x slower than conv3D, and probably 10x
-            # slower than it could be), and incorrect when dx or dy > 2.
-
-            # build a "node", that should be equivalent to the one given by
-            # self.make_node, but using conv3D instead of self.
-            shuffled_inputs = inputs.dimshuffle(0, 2, 3, 'x', 1)
-            if inputs.name is not None:
-                shuffled_inputs.name = 'shuffle_for_conv3D(%s)' % inputs.name
-            flipped_kerns = kerns[:, :, ::-1, ::-1]
-            if kerns.name is not None:
-                flipped_kerns.name = 'flipped(%s)' % kerns.name
-            shuffled_kerns = flipped_kerns.dimshuffle(0, 2, 3, 'x', 1)
-            if flipped_kerns.name is not None:
-                shuffled_kerns.name = 'shuffled_for_conv3D(%s)' % flipped_kerns.name
-
-            tmp_node = theano.tensor.nnet.conv3D(
-                V=shuffled_inputs,
-                W=shuffled_kerns,
-                b=theano.tensor.alloc(np.asarray(0, dtype=kerns.dtype),
-                                      kerns.shape[0]),
-                d=(self.dx, self.dy, 1))
-            node = theano.tensor.addbroadcast(
-                tmp_node, 3).dimshuffle(0, 4, 1, 2)
-
-            # mimic what happens inside theano.grad: get the input gradient
-            # of the final cost wrt all variables involved.
-            return theano.gradient.grad(cost=None, known_grads={node: gz},
-                                        wrt=[inputs, kerns])
+            raise NotImplementedError(
+                "ERROR: ConvOp.grad is now disabled for 'valid' convolutions with"
+                " stride != (1, 1); call theano.tensor.nnet.conv2d() instead.")
 
         if self.dx not in (1, 2) or self.dy not in (1, 2):
             raise NotImplementedError(
@@ -1816,7 +1793,7 @@ def gen_conv_code_unroll_batch_kern(d, unroll_bsize=1, unroll_ksize=1):
     """
     assert unroll_bsize > 0 and unroll_ksize > 0
     if "unroll_bsize" in d or "unroll_ksize" in d or "unroll_iter" in d or "unroll_biter" in d or "unroll_kiter" in d:
-        raise Exception("We can't use this dictionnary as we will overwrite some of its containt")
+        raise Exception("We can't use this dictionary as we will overwrite some of its containt")
     d = d.copy()
 
     d["unroll_bsize"] = unroll_bsize

@@ -243,10 +243,8 @@ def test_badoptimization():
 
 
 def test_badoptimization_opt_err():
-    """This variant of test_badoptimization() replace the working code
-    with a new apply node that will raise an error.
-
-    """
+    # This variant of test_badoptimization() replace the working code
+    # with a new apply node that will raise an error.
     @gof.local_optimizer([theano.tensor.add])
     def insert_bigger_b_add(node):
         if node.op == theano.tensor.add:
@@ -286,7 +284,7 @@ def test_badoptimization_opt_err():
 
     # Test that opt that do an illegal change still get the error from gof.
     try:
-        with theano.configparser.change_flags(on_opt_error='raise'):
+        with theano.change_flags(on_opt_error='raise'):
             f2 = theano.function([a, b], a + b,
                                  mode=debugmode.DebugMode(optimizer=opt2,
                                                           stability_patience=1))

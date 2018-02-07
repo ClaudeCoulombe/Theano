@@ -12,10 +12,9 @@ from six import string_types
 
 import re
 import theano
-from theano.gof import utils
+from theano.gof import graph, utils
 from theano.gof.utils import MethodNotDefined, object2
-from theano.gof import graph
-from theano.configparser import change_flags
+from theano import change_flags
 
 ########
 # Type #
@@ -29,7 +28,7 @@ class CLinkerType(CLinkerObject):
     """
     Interface specification for Types that can be arguments to a `CLinkerOp`.
 
-    A CLinkerType instance is mainly reponsible  for providing the C code that
+    A CLinkerType instance is mainly responsible  for providing the C code that
     interfaces python objects with a C `CLinkerOp` implementation.
 
     See WRITEME for a general overview of code generation by `CLinker`.
@@ -276,7 +275,7 @@ class PureType(object):
     """
     Interface specification for variable type instances.
 
-    A :term:`Type` instance is mainly reponsible for two things:
+    A :term:`Type` instance is mainly responsible for two things:
 
     - creating `Variable` instances (conventionally, `__call__` does this), and
 
@@ -634,7 +633,9 @@ class _make_cdata(Op):
         """ % dict(ctype=self.rtype.ctype, out=outputs[0], inp=inputs[0])
 
     def c_code_cache_version(self):
-        return (0,)
+        if self.rtype.version is None:
+            return None
+        return (0, self.rtype.version)
 
 
 class CDataType(Type):
@@ -658,31 +659,24 @@ class CDataType(Type):
     """
     __props__ = ('ctype', 'freefunc', 'headers', 'header_dirs',
                  'libraries', 'lib_dirs', 'extra_support_code',
-                 'version')
+                 'compile_args', 'version')
 
-    def __init__(self, ctype, freefunc=None, headers=None, header_dirs=None,
-                 libraries=None, lib_dirs=None, extra_support_code="",
-                 version=None):
+    def __init__(self, ctype, freefunc=None, headers=(), header_dirs=(),
+                 libraries=(), lib_dirs=(), compile_args=(),
+                 extra_support_code="", version=None):
         assert isinstance(ctype, string_types)
         self.ctype = ctype
         if freefunc is not None:
             assert isinstance(freefunc, string_types)
         self.freefunc = freefunc
-        if headers is None:
-            headers = ()
         self.headers = tuple(headers)
-        if header_dirs is None:
-            header_dirs = ()
         self.header_dirs = tuple(header_dirs)
-        if libraries is None:
-            libraries = ()
         self.libraries = tuple(libraries)
-        if lib_dirs is None:
-            lib_dirs = ()
         self.lib_dirs = tuple(lib_dirs)
+        self.compile_args = tuple(compile_args)
         self.extra_support_code = extra_support_code
         self._fn = None
-        self.version = None
+        self.version = version
 
     def filter(self, data, strict=False, allow_downcast=None):
         if data is not None and not isinstance(data, _cdata_type):
@@ -787,6 +781,9 @@ if (py_%(name)s == NULL) { %(freefunc)s(%(name)s); }
     def c_lib_dirs(self):
         return self.lib_dirs
 
+    def c_compile_args(self):
+        return self.compile_args
+
     def c_code_cache_version(self):
         v = (3, )
         if self.version is not None:
@@ -803,7 +800,8 @@ if (py_%(name)s == NULL) { %(freefunc)s(%(name)s); }
             self.header_dirs = ()
             self.libraries = ()
             self.lib_dirs = ()
-            self.extra_support_code = ""
+        if not hasattr(self, 'version'):
+            self.version = None
 
 
 class CDataTypeConstant(graph.Constant):
@@ -850,19 +848,27 @@ class EnumType(Type, dict):
         int constant_3 = CONSTANT_3; // constant_3 == 0
         int constant_4 = CONSTANT_4; // constant_4 == 1
 
-    You can also specify a C type for the op param if you want to pass one of these constant values at runtime.
-    Default C type is ``double``.
+    You can also specify a C type for the op param. Default C type is ``double``.
 
     .. code-block:: python
 
         enum = EnumType(CONSTANT_1=0, CONSTANT_2=1, CONSTANT_3=2, ctype='size_t')
-        op_param_value = enum.CONSTANT_1
+        # In C code, the Op param will then be a ``size_t``.
 
-    In C code:
+    .. note::
 
-    .. code-block:: c
+        You can also specify a C name (``cname``) or the current enumeration. This C name may be
+        used to name functions related to that specific enumeration, e.g. for debugging
+        purposes. Default C name is the C type (with any sequence of spaces replaced with
+        an underscore). If you want to debug and your C type is quite generic (e.g.
+        ``int`` or ``double``), we recommend you specify a C name.
 
-        size_t value = op_param_value; // contains enum.CONSTANT_1, i.e 0
+        C name must be a valid C identifier.
+
+        .. code-block:: python
+
+            enum = EnumType(CONSTANT_1=0, CONSTANT_2=1, CONSTANT_3=2,
+                            ctype='size_t', cname='MyEnumName')
 
     **Example with aliases**
 
@@ -917,8 +923,14 @@ class EnumType(Type, dict):
             raise TypeError('%s: invalid C type.' % type(self).__name__)
         self.ctype = ' '.join(ctype_parts)
 
+    def __init_cname(self, cname):
+        if not re.match('^[A-Za-z_][A-Za-z0-9_]*$', cname):
+            raise TypeError("%s: invalid C name." % type(self).__name__)
+        self.cname = cname
+
     def __init__(self, **kwargs):
         self.__init_ctype(kwargs.pop('ctype', 'double'))
+        self.__init_cname(kwargs.pop('cname', self.ctype.replace(' ', '_')))
         self.aliases = dict()
         for k in kwargs:
             if re.match('^[A-Z][A-Z0-9_]*$', k) is None:
@@ -965,9 +977,9 @@ class EnumType(Type, dict):
 
     def get_aliases(self):
         """
-        Return the list of all aliases in this enumeration.
+        Return the sorted tuple of all aliases in this enumeration.
         """
-        return self.aliases.keys()
+        return tuple(sorted(self.aliases.keys()))
 
     def __repr__(self):
         names_to_aliases = {constant_name: '' for constant_name in self}
@@ -1042,12 +1054,51 @@ class EnumType(Type, dict):
     #endif
     """
 
+    def c_to_string(self):
+        """
+        Return code for a C function that will convert an enumeration value
+        to a string representation. The function prototype is:
+
+        .. code-block:: c
+
+            int theano_enum_to_string_<cname>(<ctype> value, char* output_string);
+
+        Where ``ctype`` and ``cname`` are the C type and the C name of current Theano enumeration.
+
+        ``output_string`` should be large enough to contain the longest name in this enumeration.
+
+        If given value is unknown, the C function sets a Python ValueError exception and returns a non-zero.
+
+        This C function may be useful to retrieve some runtime informations.
+        It is available in C code when theano flag ``config.cmodule.debug`` is set to ``True``.
+        """
+        return """
+        #ifdef DEBUG
+        int theano_enum_to_string_%(cname)s(%(ctype)s in, char* out) {
+            int ret = 0;
+            switch(in) {
+                %(cases)s
+                default:
+                    PyErr_SetString(PyExc_ValueError, "%(classname)s:  unknown enum value.");
+                    ret = -1;
+                    break;
+            }
+            return ret;
+        }
+        #endif
+        """ % dict(cname=self.cname, ctype=self.ctype,
+                   classname=type(self).__name__,
+                   cases=''.join("""
+                   case %(name)s: sprintf(out, "%(name)s"); break;
+                   """ % dict(name=name) for name in self))
+
     def c_support_code(self):
         return (
             self.pyint_compat_code +
             ''.join("""
             #define %s %s
-            """ % (k, str(self[k])) for k in sorted(self.keys()))
+            """ % (k, str(self[k])) for k in sorted(self.keys())) +
+            self.c_to_string()
         )
 
     def c_declare(self, name, sub, check_input=True):
@@ -1072,7 +1123,7 @@ class EnumType(Type, dict):
         """ % dict(ctype=self.ctype, name=name, fail=sub['fail'])
 
     def c_code_cache_version(self):
-        return (1, 1)
+        return (2, self.ctype, self.cname, tuple(self.items()))
 
 
 class EnumList(EnumType):
@@ -1091,7 +1142,7 @@ class EnumList(EnumType):
         print (enum.CONSTANT_1, enum.CONSTANT_2, enum.CONSTANT_3, enum.CONSTANT_4, enum.CONSTANT_5)
         # will print: 0 1 2 3 4
 
-    Like :class:`EnumType`, you can also define the C type for the op param.
+    Like :class:`EnumType`, you can also define the C type and a C name for the op param.
     Default C type is ``int``::
 
         enum = EnumList('CONSTANT_1', 'CONSTANT_2', 'CONSTANT_3', 'CONSTANT_4', ctype='unsigned int')
@@ -1109,9 +1160,10 @@ class EnumList(EnumType):
     """
 
     def __init__(self, *args, **kwargs):
-        assert len(kwargs) == 0 or (len(kwargs) == 1 and 'ctype' in kwargs), \
-            type(self).__name__ + ': expected 0 or only 1 extra parameter "ctype".'
+        assert len(kwargs) in (0, 1, 2), (type(self).__name__ +
+                                          ': expected 0 to 2 extra parameters ("ctype", "cname").')
         ctype = kwargs.pop('ctype', 'int')
+        cname = kwargs.pop('cname', None)
 
         for arg_rank, arg in enumerate(args):
             if isinstance(arg, (list, tuple)):
@@ -1134,6 +1186,8 @@ class EnumList(EnumType):
             kwargs[constant_name] = constant_value
 
         kwargs.update(ctype=ctype)
+        if cname is not None:
+            kwargs.update(cname=cname)
         super(EnumList, self).__init__(**kwargs)
 
 
@@ -1150,7 +1204,7 @@ class CEnumType(EnumList):
      - In C code, the real values defined in C will be used.
        They could be used either for choices or for its real values.
 
-    Like :class:`EnumList`, you can also define the C type for the op param.
+    Like :class:`EnumList`, you can also define the C type and a C name for the op param.
     Default C type is ``int``.
 
     .. code-block:: python
@@ -1159,7 +1213,7 @@ class CEnumType(EnumList):
 
     Like :class:`EnumList`, you can also add an alias to a constant, with same syntax as in :class:`EnumList`.
 
-    See test class :class:`theano.gof.tests.test_types.TestOpCEnumType` for a working example.
+    See test :func:`theano.gof.tests.test_types.TestEnumTypes.test_op_with_cenumtype` for a working example.
 
     .. note::
 
@@ -1169,7 +1223,7 @@ class CEnumType(EnumList):
     """
 
     def c_support_code(self):
-        return self.pyint_compat_code
+        return self.pyint_compat_code + self.c_to_string()
 
     def c_extract(self, name, sub, check_input=True):
         swapped_dict = dict((v, k) for (k, v) in self.items())
@@ -1190,6 +1244,4 @@ class CEnumType(EnumList):
                    fail=sub['fail'])
 
     def c_code_cache_version(self):
-        # C code depends on (C constant name, Python value) associations (given by `self.items()`),
-        # so we should better take them into account in C code version.
-        return (1, tuple(self.items()), super(CEnumType, self).c_code_cache_version())
+        return (1, super(CEnumType, self).c_code_cache_version())

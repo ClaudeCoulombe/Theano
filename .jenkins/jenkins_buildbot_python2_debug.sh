@@ -2,6 +2,7 @@
 
 BUILDBOT_DIR=$WORKSPACE/nightly_build
 THEANO_PARAM="theano --with-timer --timer-top-n 10 -v"
+export MKL_THREADING_LAYER=GNU
 export THEANO_FLAGS=init_gpu_device=cuda
 
 # CUDA
@@ -16,7 +17,7 @@ LIBDIR=${WORKSPACE}/local
 
 # Make fresh clones of libgpuarray (with no history since we don't need it)
 rm -rf libgpuarray
-git clone --depth 1 "https://github.com/Theano/libgpuarray.git"
+git clone "https://github.com/Theano/libgpuarray.git"
 
 # Clean up previous installs (to make sure no old files are left)
 rm -rf $LIBDIR
@@ -46,6 +47,7 @@ python -c 'import pygpu; print(pygpu.__file__)'
 
 # nosetests xunit for test profiling
 XUNIT="--with-xunit --xunit-file="
+SUITE="--xunit-testsuite-name="
 
 mkdir -p ${BUILDBOT_DIR}
 ls -l ${BUILDBOT_DIR}
@@ -62,6 +64,9 @@ export PYTHONPATH=${WORKSPACE}:$PYTHONPATH
 
 echo "Number of elements in the compiledir:"
 ls ${COMPILEDIR}|wc -l
+
+# Exit if theano.gpuarray import fails
+python -c "import theano.gpuarray; theano.gpuarray.use('${DEVICE}')" || { echo 'theano.gpuarray import failed, exiting'; exit 1; }
 
 # We don't want warnings in the buildbot for errors already fixed.
 FLAGS=${THEANO_FLAGS},warn.ignore_bug_before=all,$FLAGS
@@ -89,7 +94,8 @@ echo "Executing tests with mode=DEBUG_MODE with seed of the day $seed"
 FILE=${ROOT_CWD}/theano_debug_tests.xml
 echo "THEANO_FLAGS=${FLAGS},unittests.rseed=$seed,mode=DEBUG_MODE,DebugMode.check_strides=0,DebugMode.patience=3,DebugMode.check_preallocated_output= ${NOSETESTS} ${THEANO_PARAM} ${XUNIT}${FILE}"
 date
-THEANO_FLAGS=${FLAGS},unittests.rseed=$seed,mode=DEBUG_MODE,DebugMode.check_strides=0,DebugMode.patience=3,DebugMode.check_preallocated_output= ${NOSETESTS} ${THEANO_PARAM} ${XUNIT}${FILE}
+NAME=python2_debug
+THEANO_FLAGS=${FLAGS},unittests.rseed=$seed,mode=DEBUG_MODE,DebugMode.check_strides=0,DebugMode.patience=3,DebugMode.check_preallocated_output= ${NOSETESTS} ${THEANO_PARAM} ${XUNIT}${FILE} ${SUITE}${NAME}
 
 echo "Number of elements in the compiledir:"
 ls ${COMPILEDIR}|wc -l

@@ -56,7 +56,7 @@ def safe_new(x, tag='', dtype=None):
         if dtype and x.dtype != dtype:
             casted_x = x.astype(dtype)
             nwx = x.__class__(casted_x.type, x.data, x.name)
-            nwx.tag = copy(x.tag)
+            nwx.tag = copy.copy(x.tag)
             return nwx
         else:
             return x.clone()
@@ -743,7 +743,7 @@ def equal_computations(xs, ys, in_xs=None, in_ys=None):
     for i in range(len(xs)):
         if xs[i].owner:
             # The case where pairs of x[i]s and y[i]s don't both have an owner
-            # have already been adressed.
+            # have already been addressed.
             is_equal = compare_nodes(xs[i].owner, ys[i].owner, common, different)
             if not is_equal:
                 return False
@@ -948,7 +948,7 @@ def scan_can_remove_outs(op, out_idxs):
         added = False
         for pos, idx in enumerate(out_idxs):
             if (out_idxs_mask[pos] and
-                 np.any([x in required_inputs for x in out_ins[idx]])):
+                    any([x in required_inputs for x in out_ins[idx]])):
                 # This output is required ..
                 out_idxs_mask[pos] = 0
                 required_inputs += gof.graph.inputs([op.outputs[idx]])
@@ -967,7 +967,7 @@ def compress_outs(op, not_required, inputs):
     a list of inputs to the apply node corresponding to the scan op and
     produces the list of inputs and outputs and the info dictionary where
     the indicated outputs are eliminated. Note that eliminating an output
-    means removing its inputs from the inner funciton and from the
+    means removing its inputs from the inner function and from the
     node inputs, and changing the dictionary.
 
     """

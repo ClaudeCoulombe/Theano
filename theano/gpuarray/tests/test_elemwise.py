@@ -3,11 +3,10 @@ from copy import copy
 from unittest import TestCase
 
 import numpy as np
-import scipy.special
 
 import theano
 from theano import scalar, gof, tensor
-from theano.compile import DebugMode
+from theano.compile import DebugMode, Mode
 from theano.tests.unittest_tools import SkipTest, assert_allclose
 
 from theano.tensor.tests import test_elemwise
@@ -16,9 +15,18 @@ from .config import mode_with_gpu, mode_without_gpu, test_ctx_name
 from .test_basic_ops import rand_gpuarray
 from ..elemwise import (GpuElemwise, GpuDimShuffle,
                         GpuCAReduceCuda, GpuCAReduceCPY, GpuErfinv, GpuErfcinv)
+from ..dnn import GpuDnnReduction
 from ..type import GpuArrayType, get_context, gpuarray_shared_constructor
 
+
 from pygpu import ndgpuarray as gpuarray
+
+imported_scipy_special = False
+try:
+    import scipy.special
+    imported_scipy_special = True
+except ImportError:
+    pass
 
 
 # This is actually a test for GpuElemwise
@@ -51,7 +59,6 @@ def test_elemwise_pow():
             assert exp.dtype == dtype_exp
             output = base ** exp
             f = theano.function([base], output, mode=mode_with_gpu)
-            theano.printing.debugprint(f)
             # We don't transfer to the GPU when the output dtype is int*
             n = len([n for n in f.maker.fgraph.apply_nodes
                      if isinstance(n.op, GpuElemwise)])
@@ -71,6 +78,8 @@ class TestMathErrorFunctions(TestCase):
 
     @classmethod
     def setUpClass(cls):
+        if not imported_scipy_special:
+            raise SkipTest("scipy.special needed")
         # NB: erfinv is defined in ]-1;1[, and erfcinv is defined in ]0;2[,
         # so we just take some values in an interval that covers both domains
         # (this will also allow to test some values outside the domains).
@@ -210,32 +219,40 @@ class test_GpuCAReduceCPY(test_elemwise.test_CAReduce):
     def test_perform(self):
         for dtype in self.dtypes + self.bin_dtypes:
             for op in self.reds:
-                self.with_linker(gof.PerformLinker(), op, dtype=dtype,
-                                 pre_scalar_op=self.pre_scalar_op)
+                self.with_mode(Mode(linker='py',
+                                    optimizer=mode_with_gpu.optimizer),
+                               op, dtype=dtype,
+                               pre_scalar_op=self.pre_scalar_op)
 
     def test_perform_nan(self):
         for dtype in self.dtypes:
             if not dtype.startswith('float'):
                 continue
             for op in self.reds:
-                self.with_linker(gof.PerformLinker(), op, dtype=dtype,
-                                 test_nan=True,
-                                 pre_scalar_op=self.pre_scalar_op)
+                self.with_mode(Mode(linker='py',
+                                    optimizer=mode_with_gpu.optimizer),
+                               op, dtype=dtype,
+                               test_nan=True,
+                               pre_scalar_op=self.pre_scalar_op)
 
     def test_c(self):
         for dtype in self.dtypes + self.bin_dtypes:
             for op in self.reds:
-                self.with_linker(gof.CLinker(), op, dtype=dtype,
-                                 pre_scalar_op=self.pre_scalar_op)
+                self.with_mode(Mode(linker='c',
+                                    optimizer=mode_with_gpu.optimizer),
+                               op, dtype=dtype,
+                               pre_scalar_op=self.pre_scalar_op)
 
     def test_c_nan(self):
         for dtype in self.dtypes:
             if not dtype.startswith('float'):
                 continue
             for op in self.reds:
-                self.with_linker(gof.CLinker(), op, dtype=dtype,
-                                 test_nan=True,
-                                 pre_scalar_op=self.pre_scalar_op)
+                self.with_mode(Mode(linker='c',
+                                    optimizer=mode_with_gpu.optimizer),
+                               op, dtype=dtype,
+                               test_nan=True,
+                               pre_scalar_op=self.pre_scalar_op)
 
     def test_infer_shape(self):
         for dtype in self.dtypes:
@@ -332,6 +349,9 @@ class test_GpuCAReduceCuda(test_GpuCAReduceCPY):
             scalar.maximum, scalar.minimum]
     pre_scalar_op = None
 
+    def test_perform_noopt(self):
+        return
+
     def test_perform(self):
         return
 
@@ -346,7 +366,9 @@ class test_GpuCAReduceCuda(test_GpuCAReduceCPY):
 
 class T_gpureduce_dtype(test_elemwise.T_reduce_dtype):
     mode = mode_with_gpu.excluding('local_cut_useless_reduce')
-    op = GpuCAReduceCuda
+
+    # GpuDnnReduction doesn't cover all cases, but should cover some
+    op = (GpuCAReduceCuda, GpuDnnReduction)
     # Currently we don't support reduction on 0 axis
     axes = [None, 0, 1, 1, [0], [1], [0, 1]]
     # We don't support complex dtype

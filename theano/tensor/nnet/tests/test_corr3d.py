@@ -3,6 +3,8 @@ from __future__ import absolute_import, print_function, division
 from nose.plugins.skip import SkipTest
 from nose.plugins.attrib import attr
 from nose.tools import assert_equals
+from parameterized import parameterized
+
 import numpy as np
 from six import integer_types
 
@@ -10,6 +12,7 @@ import theano
 import theano.tensor as T
 from theano.tests import unittest_tools as utt
 from theano.tensor.nnet import corr3d, conv
+from theano.tensor.nnet.tests.test_abstract_conv import Grouped_conv3d_noOptim
 
 
 class TestCorr3D(utt.InferShapeTester):
@@ -151,11 +154,9 @@ class TestCorr3D(utt.InferShapeTester):
 
     @attr('slow')
     def test_basic(self):
-        """
-        Tests that basic correlations work for odd and even
-        dimensions of image and filter shapes, as well as rectangular
-        images and filters.
-        """
+        # Tests that basic correlations work for odd and even
+        # dimensions of image and filter shapes, as well as rectangular
+        # images and filters.
         border_modes = ['valid', 'full', 'half', (1, 1, 1),
                         (2, 1, 1), (1, 2, 1), (1, 1, 2),
                         (3, 3, 3), 1]
@@ -180,9 +181,7 @@ class TestCorr3D(utt.InferShapeTester):
 
     @attr('slow')
     def test_subsample(self):
-        """
-        Tests correlation where subsampling != (1,1,1)
-        """
+        # Tests correlation where subsampling != (1,1,1)
         self.validate((3, 2, 7, 5, 5), (2, 2, 2, 3, 3), 'valid', subsample=(2, 2, 2))
         self.validate((3, 2, 7, 5, 5), (2, 2, 2, 3, 3), 'valid', subsample=(2, 1, 1))
         self.validate((1, 1, 6, 6, 6), (1, 1, 3, 3, 3), 'valid', subsample=(3, 3, 3))
@@ -201,61 +200,53 @@ class TestCorr3D(utt.InferShapeTester):
 
         self.validate((1, 1, 6, 6, 6), (1, 1, 3, 3, 3), 1, subsample=(3, 3, 3))
 
-    def test_filter_dilation(self):
-        """
-        Tests correlation where filter dilation != (1,1,1)
-        """
-        self.validate((3, 2, 7, 5, 5), (2, 2, 2, 3, 3), 'valid', filter_dilation=(2, 2, 2))
-        self.validate((3, 2, 14, 10, 10), (2, 2, 2, 3, 3), 'valid', filter_dilation=(3, 1, 1))
-        self.validate((1, 1, 14, 14, 14), (1, 1, 3, 3, 3), 'valid', filter_dilation=(2, 3, 3))
+    # Tests correlation where filter dilation != (1,1,1)
+    @parameterized.expand([
+        ((3, 2, 7, 5, 5), (2, 2, 2, 3, 3), 'valid', (2, 2, 2)),
+        ((3, 2, 14, 10, 10), (2, 2, 2, 3, 3), 'valid', (3, 1, 1)),
+        ((1, 1, 14, 14, 14), (1, 1, 3, 3, 3), 'valid', (2, 3, 3)),
+        ((3, 2, 7, 5, 5), (2, 2, 2, 3, 3), 'full', (2, 2, 2)),
+        ((3, 2, 7, 5, 5), (2, 2, 2, 3, 3), 'full', (3, 1, 1)),
+        ((1, 1, 6, 6, 6), (1, 1, 3, 3, 3), 'full', (2, 3, 3)),
+        ((3, 2, 7, 5, 5), (2, 2, 2, 3, 3), 'half', (2, 2, 2)),
+        ((3, 2, 7, 5, 5), (2, 2, 2, 3, 3), 'half', (3, 1, 1)),
+        ((1, 1, 6, 6, 6), (1, 1, 3, 3, 3), 'half', (2, 3, 3)),
+        ((3, 2, 7, 5, 5), (2, 2, 2, 3, 3), (1, 1, 1), (2, 2, 2)),
+        ((3, 2, 7, 5, 5), (2, 2, 2, 3, 3), (2, 1, 1), (2, 1, 1)),
+        ((1, 1, 6, 6, 6), (1, 1, 3, 3, 3), (1, 2, 1), (1, 2, 1)),
+        ((1, 1, 6, 6, 6), (1, 1, 3, 3, 3), (1, 1, 2), (1, 1, 2))])
+    def test_filter_dilation(self, image_shape, filter_shape, border_mode, filter_dilation):
+        self.validate(image_shape, filter_shape, border_mode, filter_dilation=filter_dilation)
 
-        self.validate((3, 2, 7, 5, 5), (2, 2, 2, 3, 3), 'full', filter_dilation=(2, 2, 2))
-        self.validate((3, 2, 7, 5, 5), (2, 2, 2, 3, 3), 'full', filter_dilation=(3, 1, 1))
-        self.validate((1, 1, 6, 6, 6), (1, 1, 3, 3, 3), 'full', filter_dilation=(2, 3, 3))
-
-        self.validate((3, 2, 7, 5, 5), (2, 2, 2, 3, 3), 'half', filter_dilation=(2, 2, 2))
-        self.validate((3, 2, 7, 5, 5), (2, 2, 2, 3, 3), 'half', filter_dilation=(3, 1, 1))
-        self.validate((1, 1, 6, 6, 6), (1, 1, 3, 3, 3), 'half', filter_dilation=(2, 3, 3))
-
-        self.validate((3, 2, 7, 5, 5), (2, 2, 2, 3, 3), (1, 1, 1), filter_dilation=(2, 2, 2))
-        self.validate((3, 2, 7, 5, 5), (2, 2, 2, 3, 3), (2, 1, 1), filter_dilation=(2, 1, 1))
-        self.validate((1, 1, 6, 6, 6), (1, 1, 3, 3, 3), (1, 2, 1), filter_dilation=(1, 2, 1))
-        self.validate((1, 1, 6, 6, 6), (1, 1, 3, 3, 3), (1, 1, 2), filter_dilation=(1, 1, 2))
-
+    def test_filter_dilation_subsample(self):
         self.validate((1, 1, 6, 6, 6), (1, 1, 3, 3, 3), 1, subsample=(3, 3, 3), filter_dilation=(2, 2, 2))
 
-    @attr('slow')
-    def test_shape_Constant_tensor(self):
-        """
-        Tests correlation where the {image,filter}_shape is a Constant tensor.
-        """
+    @parameterized.expand([('valid',), ('full',), ('half',), ((1, 1, 1),),
+                           ((2, 1, 1),), ((1, 2, 1),), ((1, 1, 2),),
+                           ((3, 3, 3),), (1,)])
+#    @attr('slow')
+    def test_shape_Constant_tensor(self, border_mode):
+        # Tests correlation where the {image,filter}_shape is a Constant tensor
         as_t = T.as_tensor_variable
-        border_modes = ['valid', 'full', 'half', (1, 1, 1), (2, 1, 1),
-                        (1, 2, 1), (1, 1, 2), (3, 3, 3), 1]
-
-        for border_mode in border_modes:
-            self.validate((as_t(3), as_t(2), as_t(7), as_t(5), as_t(5)),
-                          (5, 2, 2, 3, 3), border_mode)
-            self.validate(as_t([3, 2, 7, 5, 5]), (5, 2, 2, 3, 3), border_mode)
-            self.validate(as_t((3, 2, 7, 5, 5)), (5, 2, 2, 3, 3), border_mode)
-            self.validate((3, 2, 7, 5, 5), (as_t(5), as_t(2), as_t(2),
-                          as_t(3), as_t(3)), 'valid')
-            self.validate((3, 2, 7, 5, 5), as_t([5, 2, 2, 3, 3]), border_mode)
-            self.validate(as_t([3, 2, 7, 5, 5]), as_t([5, 2, 2, 3, 3]), border_mode)
+        self.validate((as_t(3), as_t(2), as_t(7), as_t(5), as_t(5)),
+                      (5, 2, 2, 3, 3), border_mode)
+        self.validate(as_t([3, 2, 7, 5, 5]), (5, 2, 2, 3, 3), border_mode)
+        self.validate(as_t((3, 2, 7, 5, 5)), (5, 2, 2, 3, 3), border_mode)
+        self.validate((3, 2, 7, 5, 5), (as_t(5), as_t(2), as_t(2),
+                                        as_t(3), as_t(3)), 'valid')
+        self.validate((3, 2, 7, 5, 5), as_t([5, 2, 2, 3, 3]), border_mode)
+        self.validate(as_t([3, 2, 7, 5, 5]), as_t([5, 2, 2, 3, 3]),
+                      border_mode)
 
     def test_invalid_filter_shape(self):
-        """
-        Tests scenario where filter_shape[1] != input_shape[1]
-        """
+        # Tests scenario where filter_shape[1] != input_shape[1]
         self.assertRaises(ValueError, self.validate,
                           (3, 2, 8, 8, 8), (4, 3, 5, 5, 8),
                           'valid')
 
     def test_full_mode(self):
-        """
-        Tests basic correlation in full mode and case where filter
-        is larger than the input image.
-        """
+        # Tests basic correlation in full mode and case where filter
+        # is larger than the input image.
         self.validate((3, 1, 4, 4, 4), (2, 1, 5, 5, 5), 'full')
 
         def f():
@@ -263,9 +254,7 @@ class TestCorr3D(utt.InferShapeTester):
         self.assertRaises(Exception, f)
 
     def test_wrong_input(self):
-        """
-        Make sure errors are raised when image and kernel are not 5D tensors
-        """
+        # Make sure errors are raised when image and kernel are not 5D tensors
         self.assertRaises(Exception, self.validate, (3, 2, 8, 8, 8), (4, 2, 5, 5, 5),
                           'valid', input=T.dmatrix())
         self.assertRaises(Exception, self.validate, (3, 2, 8, 8, 8), (4, 2, 5, 5, 5),
@@ -276,9 +265,7 @@ class TestCorr3D(utt.InferShapeTester):
                           'valid', input=T.dtensor4())
 
     def test_dtype_upcast(self):
-        """
-        Checks dtype upcast for Corr3dMM methods.
-        """
+        # Checks dtype upcast for Corr3dMM methods.
         if not theano.config.cxx:
             raise SkipTest("Need cxx for this test")
 
@@ -430,6 +417,15 @@ class TestCorr3D(utt.InferShapeTester):
         self.validate((3, 1, 7, 5, 5), (2, 1, 2, 3, 3), (1, 1, 2), non_contiguous=True)
         self.validate((3, 1, 7, 5, 5), (2, 1, 2, 3, 3), (1, 2, 1), non_contiguous=True)
         self.validate((3, 1, 7, 5, 5), (2, 1, 2, 3, 3), (2, 1, 1), non_contiguous=True)
+
+
+class TestGroupCorr3d(Grouped_conv3d_noOptim):
+    mode = theano.compile.get_mode("FAST_RUN")
+    conv_op = corr3d.Corr3dMM
+    conv_gradw_op = corr3d.Corr3dMM_gradWeights
+    conv_gradi_op = corr3d.Corr3dMM_gradInputs
+    flip_filter = True
+    is_dnn = False
 
 
 if __name__ == '__main__':

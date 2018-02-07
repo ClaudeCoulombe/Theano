@@ -27,7 +27,7 @@ from theano.compat import PY3, decode, decode_iter
 from six import b, BytesIO, StringIO, string_types, iteritems
 from six.moves import xrange
 from theano.gof.utils import flatten
-from theano.configparser import config
+from theano import config
 from theano.gof.utils import hash_from_code
 from theano.misc.windows import (subprocess_Popen,
                                  output_subprocess_Popen)
@@ -377,7 +377,7 @@ def is_same_entry(entry_1, entry_2):
 
 def get_module_hash(src_code, key):
     """
-    Return an MD5 hash that uniquely identifies a module.
+    Return a SHA256 hash that uniquely identifies a module.
 
     This hash takes into account:
         1. The C source code of the module (`src_code`).
@@ -399,14 +399,14 @@ def get_module_hash(src_code, key):
     # Currently, in order to catch potential bugs early, we are very
     # convervative about the structure of the key and raise an exception
     # if it does not match exactly what we expect. In the future we may
-    # modify this behavior to be less strict and be able to accomodate
+    # modify this behavior to be less strict and be able to accommodate
     # changes to the key in an automatic way.
-    # Note that if the key structure changes, the `get_safe_part` fucntion
+    # Note that if the key structure changes, the `get_safe_part` function
     # below may also need to be modified.
     error_msg = ("This should not happen unless someone modified the code "
                  "that defines the CLinker key, in which case you should "
                  "ensure this piece of code is still valid (and this "
-                 "AssertionError may be removed or modified to accomodate "
+                 "AssertionError may be removed or modified to accommodate "
                  "this change)")
     assert c_link_key[0] == 'CLinker.cmodule_key', error_msg
     for key_element in c_link_key[1:]:
@@ -415,9 +415,12 @@ def get_module_hash(src_code, key):
             # libraries to link against.
             to_hash += list(key_element)
         elif isinstance(key_element, string_types):
-            if key_element.startswith('md5:'):
-                # This is the md5 hash of the config options. We can stop
-                # here.
+            if (key_element.startswith('md5:') or
+                    key_element.startswith('hash:')):
+                # This is actually a sha256 hash of the config options.
+                # Currently, we still keep md5 to don't break old Theano.
+                # We add 'hash:' so that when we change it in
+                # the futur, it won't break this version of Theano.
                 break
             elif (key_element.startswith('NPY_ABI_VERSION=0x') or
                   key_element.startswith('c_compiler_str=')):
@@ -435,25 +438,36 @@ def get_safe_part(key):
 
     This tuple should only contain objects whose __eq__ and __hash__ methods
     can be trusted (currently: the version part of the key, as well as the
-    md5 hash of the config options).
+    SHA256 hash of the config options).
     It is used to reduce the amount of key comparisons one has to go through
     in order to find broken keys (i.e. keys with bad implementations of __eq__
     or __hash__).
+
 
     """
     version = key[0]
     # This function should only be called on versioned keys.
     assert version
 
-    # Find the md5 hash part.
+    # Find the hash part. This is actually a sha256 hash of the config
+    # options.  Currently, we still keep md5 to don't break old
+    # Theano.  We add 'hash:' so that when we change it
+    # in the futur, it won't break this version of Theano.
     c_link_key = key[1]
+    # In case in the future, we don't have an md5 part and we have
+    # such stuff in the cache.  In that case, we can set None, and the
+    # rest of the cache mechanism will just skip that key.
+    hash = None
     for key_element in c_link_key[1:]:
-        if (isinstance(key_element, string_types) and
-                key_element.startswith('md5:')):
-            md5 = key_element[4:]
-            break
+        if isinstance(key_element, string_types):
+            if key_element.startswith('md5:'):
+                hash = key_element[4:]
+                break
+            elif key_element.startswith('hash:'):
+                hash = key_element[5:]
+                break
 
-    return key[0] + (md5, )
+    return key[0] + (hash, )
 
 
 class KeyData(object):
@@ -743,7 +757,11 @@ class ModuleCache(object):
         time_now = time.time()
         # Go through directories in alphabetical order to ensure consistent
         # behavior.
-        subdirs = sorted(os.listdir(self.dirname))
+        try:
+            subdirs = sorted(os.listdir(self.dirname))
+        except OSError:
+            # This can happen if the dir don't exist.
+            subdirs = []
         files, root = None, None  # To make sure the "del" below works
         for subdirs_elem in subdirs:
             # Never clean/remove lock_dir
@@ -1043,7 +1061,7 @@ class ModuleCache(object):
             assert key in all_keys
         for k in all_keys:
             if k in self.entry_from_key:
-                assert self.entry_from_key[k] == name
+                assert self.entry_from_key[k] == name, (self.entry_from_key[k], name)
             else:
                 self.entry_from_key[k] = name
                 if key[0]:
@@ -1230,7 +1248,7 @@ class ModuleCache(object):
                 "Ops. The file is: %s. The key is: %s" % (msg, key_pkl, key))
         # Also verify that there exists no other loaded key that would be equal
         # to this key. In order to speed things up, we only compare to keys
-        # with the same version part and config md5, since we can assume this
+        # with the same version part and config hash, since we can assume this
         # part of the key is not broken.
         for other in self.similar_keys.get(get_safe_part(key), []):
             if other is not key and other == key and hash(other) != hash(key):
@@ -1591,7 +1609,7 @@ def std_include_dirs():
     py_plat_spec_inc = distutils.sysconfig.get_python_inc(plat_specific=True)
     python_inc_dirs = ([py_inc] if py_inc == py_plat_spec_inc
                        else [py_inc, py_plat_spec_inc])
-    gof_inc_dir = os.path.abspath(os.path.dirname(__file__))
+    gof_inc_dir = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'c_code')
     return numpy_inc_dirs + python_inc_dirs + [gof_inc_dir]
 
 
@@ -1764,6 +1782,9 @@ class Compiler(object):
         try:
             fd, path = tempfile.mkstemp(suffix='.c', prefix=tmp_prefix)
             exe_path = path[:-2]
+            if os.name == 'nt':
+                path = "\"" + path + "\""
+                exe_path = "\"" + exe_path + "\""
             try:
                 # Python3 compatibility: try to cast Py3 strings as Py2 strings
                 try:
@@ -1879,7 +1900,10 @@ class GCC_compiler(Compiler):
     @staticmethod
     def compile_args(march_flags=True):
         cxxflags = [flag for flag in config.gcc.cxxflags.split(' ') if flag]
-
+        if "-fopenmp" in cxxflags:
+            raise ValueError(
+                "Do not use -fopenmp in Theano flag gcc.cxxflags."
+                " To enable OpenMP, use the Theano flag openmp=True")
         # Add the equivalent of -march=native flag.  We can't use
         # -march=native as when the compiledir is shared by multiple
         # computers (for example, if the home directory is on NFS), this
